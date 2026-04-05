@@ -17,6 +17,7 @@ def get_settings() -> dict:
         "mongo_uri": os.getenv("MONGODB_URI", "mongodb://localhost:27017"),
         "mongo_db": os.getenv("MONGODB_DB", "netguard_ai"),
         "artifact_dir": os.getenv("NETGUARD_ARTIFACT_DIR", default_artifacts),
+        "model_filename": os.getenv("NETGUARD_MODEL_FILENAME", "model.pkl"),
         "alert_confidence_threshold": float(os.getenv("ALERT_CONFIDENCE_THRESHOLD", "0.90")),
         "block_api_key": os.getenv("BLOCK_API_KEY", "change-me-in-production"),
         "smtp_host": os.getenv("SMTP_HOST", ""),

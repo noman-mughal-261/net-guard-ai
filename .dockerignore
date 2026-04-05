@@ -4,4 +4,5 @@
 **/dist
 **/.env
 **/data/*.csv
+!**/data/sample_flow_features.csv
 !**/data/sample_single_flow.json

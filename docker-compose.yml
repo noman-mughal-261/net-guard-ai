@@ -17,6 +17,8 @@ services:
     environment:
       MONGODB_URI: mongodb://mongo:27017
       MONGODB_DB: netguard_ai
+      NETGUARD_ARTIFACT_DIR: ${NETGUARD_ARTIFACT_DIR:-/ml/artifacts}
+      NETGUARD_MODEL_FILENAME: ${NETGUARD_MODEL_FILENAME:-model.pkl}
       BLOCK_API_KEY: ${BLOCK_API_KEY:-change-me-in-production}
       CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080
       WHITELIST_IPS: 127.0.0.1,::1,mongo,api

@@ -9,7 +9,7 @@ import numpy as np
 
 from .config import get_settings
 
-_REQUIRED_FILES = ("model.pkl", "scaler.pkl", "label_encoder.pkl", "feature_names.json")
+_ARTIFACT_NAMES = ("scaler.pkl", "label_encoder.pkl", "feature_names.json")
 
 
 class MLService:
@@ -27,15 +27,22 @@ class MLService:
     def load(self) -> None:
         if self._loaded:
             return
-        d = Path(get_settings()["artifact_dir"])
-        missing = [name for name in _REQUIRED_FILES if not (d / name).exists()]
+        settings = get_settings()
+        d = Path(settings["artifact_dir"])
+        model_name = settings["model_filename"]
+        missing = [name for name in _ARTIFACT_NAMES if not (d / name).exists()]
+        model_path = d / model_name
+        if not model_path.exists():
+            missing.insert(0, model_name)
         if missing:
             raise FileNotFoundError(
                 f"Missing model artifacts in {d}: {missing}. "
-                "Run training (e.g. python ml/train.py) or set NETGUARD_ARTIFACT_DIR "
-                "to the folder that contains model.pkl, scaler.pkl, label_encoder.pkl, and feature_names.json."
+                "Run training (e.g. python ml/train.py) or set NETGUARD_ARTIFACT_DIR to your artifact folder. "
+                "Set NETGUARD_MODEL_FILENAME if your classifier file is not named model.pkl "
+                "(e.g. netguard_rf_model.pkl). You still need scaler.pkl, label_encoder.pkl, and "
+                "feature_names.json from the same training run as the model."
             )
-        self._clf = joblib.load(d / "model.pkl")
+        self._clf = joblib.load(model_path)
         self._scaler = joblib.load(d / "scaler.pkl")
         self._le = joblib.load(d / "label_encoder.pkl")
         with open(d / "feature_names.json", encoding="utf-8") as f:
