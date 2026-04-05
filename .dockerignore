@@ -1,0 +1,7 @@
+**/node_modules
+**/__pycache__
+**/.git
+**/dist
+**/.env
+**/data/*.csv
+!**/data/sample_single_flow.json
