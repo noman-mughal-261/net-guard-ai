@@ -1,80 +1,51 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
-export type Alert = {
-  _id: string;
-  source_ip: string | null;
-  label: string;
-  confidence: number;
-  created_at: string;
-  analyst_status?: string;
-};
-
-export type BlockedIp = {
-  ip: string;
-  blocked_at: string;
-  firewall_applied?: boolean;
-  firewall_message?: string;
+export type ThreatRecord = { name: string; type: string; time: string };
+export type HistoryItem = {
+  id: string;
+  device_name: string;
+  date_time: string;
+  threats_identified: number;
+  device_details: { ip: string; firewall_status: string };
+  threats: ThreatRecord[];
 };
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
   });
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error(t || r.statusText);
-  }
-  return r.json() as Promise<T>;
+  if (!response.ok) throw new Error(await response.text());
+  return response.json() as Promise<T>;
 }
 
-export function getHealth() {
-  return fetchJson<{ status: string }>("/api/health");
-}
-
-export function getAlerts() {
-  return fetchJson<{ items: Alert[] }>("/api/alerts");
-}
-
-export function getLogs(limit = 500) {
-  return fetchJson<{ items: Record<string, unknown>[] }>(`/api/logs?limit=${limit}`);
-}
-
-export function getBlockedIps() {
-  return fetchJson<{ items: BlockedIp[] }>("/api/blocked-ips");
-}
-
-export function getAnalytics() {
-  return fetchJson<{ threat_breakdown: { _id: string; count: number }[] }>(
-    "/api/analytics/summary"
-  );
-}
-
-export function getModelPerformance() {
-  return fetchJson<Record<string, unknown>>("/api/model-performance");
-}
-
-export function blockIp(ip: string, analyst?: string) {
-  const key = import.meta.env.VITE_BLOCK_API_KEY ?? "";
-  return fetchJson<{
-    ok: boolean;
-    ip: string;
-    firewall_applied?: boolean;
-    firewall_message?: string;
-    already_blocked?: boolean;
-  }>("/api/block-ip", {
+export const signup = (payload: { full_name: string; email: string; password: string }) =>
+  fetchJson<{ ok: boolean; message: string }>("/api/signup", {
     method: "POST",
-    headers: { Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ ip, analyst: analyst ?? "dashboard" }),
+    body: JSON.stringify(payload),
   });
-}
 
-export function alertAction(alertId: string, action: "monitor" | "ignore") {
-  return fetchJson<{ ok: boolean }>("/api/alert-action", {
+export const login = (payload: { email: string; password: string }) =>
+  fetchJson<{ ok: boolean; token: string; user: { full_name: string; email: string } }>("/api/login", {
     method: "POST",
-    body: JSON.stringify({ alert_id: alertId, action }),
+    body: JSON.stringify(payload),
   });
-}
+
+export const startScan = () => fetchJson<{ session_id: string }>("/api/scan", { method: "POST" });
+
+export const getScanStatus = (sessionId: string) =>
+  fetchJson<{
+    session_id: string;
+    status: "scanning" | "complete";
+    progress: number;
+    result: {
+      device_name: string;
+      device_ip: string;
+      firewall_status: string;
+      threats: ThreatRecord[];
+      issues_found: number;
+      system_status: "Secure" | "Threat Detected";
+    };
+  }>(`/api/scan/${sessionId}`);
+
+export const getHistory = () => fetchJson<{ items: HistoryItem[] }>("/api/history");

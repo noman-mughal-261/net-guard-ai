@@ -1,411 +1,228 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Legend,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import {
-  alertAction,
-  blockIp,
-  getAlerts,
-  getAnalytics,
-  getBlockedIps,
-  getHealth,
-  getLogs,
-  getModelPerformance,
-  type Alert,
-  type BlockedIp,
-} from "./api";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { getHistory, getScanStatus, login, signup, startScan, type HistoryItem } from "./api";
 
-const COLORS = ["#22d3ee", "#a78bfa", "#f472b6", "#fbbf24", "#f87171", "#34d399"];
+type User = { full_name: string; email: string };
 
-function usePoll<T>(fn: () => Promise<T>, ms: number) {
-  const [data, setData] = useState<T | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const ref = useRef(fn);
-  ref.current = fn;
-  const load = useCallback(() => {
-    ref.current().then(setData).catch((e: Error) => setErr(e.message));
-  }, []);
-  useEffect(() => {
-    load();
-    const id = setInterval(load, ms);
-    return () => clearInterval(id);
-  }, [load, ms]);
-  return { data, err, reload: load };
-}
+const menu = ["Dashboard", "History", "Settings"];
 
-function BlockModal({
-  ip,
-  onClose,
-  onConfirm,
+function PageFrame({
+  title,
+  bg,
+  children,
+  onLogout,
+  active,
+  onNavigate,
 }: {
-  ip: string;
-  onClose: () => void;
-  onConfirm: () => void;
+  title: string;
+  bg: string;
+  children: ReactNode;
+  onLogout: () => void;
+  active: string;
+  onNavigate: (key: string) => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div className="w-full max-w-md rounded-xl border border-ng-border bg-ng-card p-6 shadow-xl">
-        <h3 className="text-lg font-semibold text-white">Confirm IP block</h3>
-        <p className="mt-2 text-sm text-ng-muted">
-          Are you sure you want to block this IP? This applies an OS-level firewall rule on Linux
-          hosts (iptables) and is only executed after analyst approval.
-        </p>
-        <p className="mt-4 rounded-lg bg-black/40 px-3 py-2 font-mono text-sm text-ng-accent">{ip}</p>
-        <div className="mt-6 flex justify-end gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg border border-ng-border px-4 py-2 text-sm text-ng-muted hover:bg-white/5"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            className="rounded-lg bg-red-500/90 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500"
-          >
-            Block IP
-          </button>
+    <div className="min-h-screen bg-cover bg-center p-4 md:p-6" style={{ backgroundImage: `url(${bg})` }}>
+      <div className="mx-auto flex min-h-[92vh] max-w-7xl rounded-2xl border border-cyan-400/20 bg-[#0a0f1c]/80 shadow-[0_0_32px_rgba(0,195,255,0.2)] backdrop-blur-md">
+        <aside className="w-20 border-r border-cyan-400/20 py-6">
+          <div className="mb-8 text-center text-cyan-300 text-xl">AI</div>
+          <div className="flex flex-col items-center gap-4">
+            {menu.map((item) => (
+              <button
+                key={item}
+                onClick={() => onNavigate(item)}
+                className={`w-12 rounded-lg border p-2 text-xs transition ${
+                  active === item ? "border-cyan-300 bg-cyan-400/20 text-cyan-200" : "border-cyan-400/20 text-slate-300 hover:bg-cyan-400/10"
+                }`}
+              >
+                {item[0]}
+              </button>
+            ))}
+          </div>
+        </aside>
+        <section className="flex-1 p-5 md:p-8">
+          <header className="mb-6 flex items-center justify-between">
+            <h1 className="text-3xl font-bold text-white">{title}</h1>
+            <button onClick={onLogout} className="rounded-lg border border-cyan-300/40 px-3 py-2 text-cyan-100 hover:bg-cyan-400/10">Logout</button>
+          </header>
+          {children}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function Splash() {
+  return (
+    <div className="min-h-screen bg-cover bg-center" style={{ backgroundImage: "url('/assets/splash-bg.png')" }}>
+      <div className="flex min-h-screen items-center justify-center bg-[#020613]/60">
+        <div className="w-full max-w-md text-center">
+          <h1 className="text-6xl font-extrabold text-white">NetGuard <span className="text-cyan-300">AI</span></h1>
+          <p className="mt-4 text-2xl text-cyan-100">Loading...</p>
+          <div className="mt-5 h-3 rounded-full bg-slate-900">
+            <div className="loading-bar h-3 rounded-full bg-cyan-300" />
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-export default function App() {
-  const health = usePoll(() => getHealth(), 15000);
-  const alertsState = usePoll(() => getAlerts(), 5000);
-  const blockedState = usePoll(() => getBlockedIps(), 8000);
-  const analyticsState = usePoll(() => getAnalytics(), 12000);
-  const logsState = usePoll(() => getLogs(800), 15000);
-  const perfState = usePoll(() => getModelPerformance(), 60000);
-
-  const [modalIp, setModalIp] = useState<string | null>(null);
-  const [actionMsg, setActionMsg] = useState<string | null>(null);
-
-  const blockedSet = useMemo(() => {
-    const s = new Set<string>();
-    (blockedState.data?.items ?? []).forEach((b: BlockedIp) => s.add(b.ip));
-    return s;
-  }, [blockedState.data]);
-
-  const pieData = useMemo(() => {
-    const rows = analyticsState.data?.threat_breakdown ?? [];
-    return rows.map((r) => ({ name: r._id || "unknown", value: r.count }));
-  }, [analyticsState.data]);
-
-  const timeSeries = useMemo(() => {
-    const items = [...(logsState.data?.items ?? [])].reverse();
-    const buckets: Record<string, number> = {};
-    for (const row of items) {
-      const t = String(row.created_at ?? "").slice(0, 13);
-      if (!t) continue;
-      buckets[t] = (buckets[t] ?? 0) + 1;
+function AuthCard({ type, onDone }: { type: "login" | "signup"; onDone: (u: User) => void }) {
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [terms, setTerms] = useState(false);
+  const [error, setError] = useState("");
+  const submit = async () => {
+    setError("");
+    if (!/\S+@\S+\.\S+/.test(email)) return setError("Enter a valid email.");
+    if (password.length < 6) return setError("Password must be at least 6 characters.");
+    if (type === "signup") {
+      if (!fullName.trim()) return setError("Full name is required.");
+      if (password !== confirm) return setError("Passwords do not match.");
+      if (!terms) return setError("Accept terms to continue.");
+      await signup({ full_name: fullName, email, password });
     }
-    return Object.entries(buckets)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .slice(-24)
-      .map(([hour, count]) => ({ hour, count }));
-  }, [logsState.data]);
-
-  const confirmBlock = async () => {
-    if (!modalIp) return;
-    try {
-      const res = await blockIp(modalIp);
-      setActionMsg(
-        res.already_blocked
-          ? `${modalIp} was already blocked.`
-          : res.firewall_applied
-            ? `${modalIp} blocked. Firewall: ${res.firewall_message ?? "ok"}`
-            : `${modalIp} recorded. ${res.firewall_message ?? ""}`
-      );
-      blockedState.reload();
-      alertsState.reload();
-    } catch (e) {
-      setActionMsg((e as Error).message);
-    } finally {
-      setModalIp(null);
-    }
+    const auth = await login({ email, password });
+    localStorage.setItem("ng_user", JSON.stringify(auth.user));
+    onDone(auth.user);
   };
-
-  const onMonitor = async (a: Alert) => {
-    try {
-      await alertAction(a._id, "monitor");
-      setActionMsg(`Alert ${a._id} marked monitoring`);
-      alertsState.reload();
-    } catch (e) {
-      setActionMsg((e as Error).message);
-    }
-  };
-
-  const onIgnore = async (a: Alert) => {
-    try {
-      await alertAction(a._id, "ignore");
-      setActionMsg(`Alert ${a._id} ignored`);
-      alertsState.reload();
-    } catch (e) {
-      setActionMsg((e as Error).message);
-    }
-  };
-
-  const cm = perfState.data?.confusion_matrix as number[][] | undefined;
-  const labels = perfState.data?.labels as string[] | undefined;
-
   return (
-    <div className="min-h-screen">
-      <header className="border-b border-ng-border bg-ng-card/80 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <div>
-            <h1 className="text-xl font-bold tracking-tight">NetGuard AI</h1>
-            <p className="text-xs text-ng-muted">Human-in-the-loop Security Operations Center</p>
-          </div>
-          <div className="flex items-center gap-3 text-sm">
-            <span
-              className={`inline-flex items-center gap-2 rounded-full px-3 py-1 ${
-                health.err || health.data?.status !== "ok"
-                  ? "bg-amber-500/20 text-amber-200"
-                  : "bg-emerald-500/15 text-emerald-300"
-              }`}
-            >
-              <span className="h-2 w-2 rounded-full bg-current" />
-              {health.err
-                ? "API unreachable"
-                : health.data?.status === "ok"
-                  ? "API + DB healthy"
-                  : "API up (DB degraded)"}
-            </span>
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-7xl space-y-8 px-6 py-8">
-        {actionMsg && (
-          <div className="rounded-lg border border-ng-border bg-ng-card px-4 py-3 text-sm text-ng-muted">
-            {actionMsg}
-            <button
-              type="button"
-              className="ml-3 text-ng-accent underline"
-              onClick={() => setActionMsg(null)}
-            >
-              dismiss
-            </button>
-          </div>
-        )}
-
-        <section>
-          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-ng-muted">
-            Live alerts
-          </h2>
-          <div className="overflow-hidden rounded-xl border border-ng-border bg-ng-card">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-black/30 text-xs uppercase text-ng-muted">
-                <tr>
-                  <th className="px-4 py-3">Source IP</th>
-                  <th className="px-4 py-3">Threat</th>
-                  <th className="px-4 py-3">Confidence</th>
-                  <th className="px-4 py-3">Time</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ng-border">
-                {(alertsState.data?.items ?? []).map((a) => {
-                  const ip = a.source_ip ?? "—";
-                  const isBlocked = ip !== "—" && blockedSet.has(ip);
-                  return (
-                    <tr key={a._id} className="hover:bg-white/[0.02]">
-                      <td className="px-4 py-3 font-mono text-xs">{ip}</td>
-                      <td className="px-4 py-3 font-medium text-white">{a.label}</td>
-                      <td className="px-4 py-3">{(a.confidence * 100).toFixed(1)}%</td>
-                      <td className="px-4 py-3 text-xs text-ng-muted">{a.created_at}</td>
-                      <td className="px-4 py-3">
-                        {isBlocked ? (
-                          <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-xs text-red-300">
-                            Blocked
-                          </span>
-                        ) : (
-                          <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-ng-muted">
-                            {a.analyst_status ?? "open"}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex flex-wrap justify-end gap-2">
-                          <button
-                            type="button"
-                            disabled={!a.source_ip || isBlocked}
-                            onClick={() => {
-                              if (a.source_ip) setModalIp(a.source_ip);
-                            }}
-                            className="rounded-md bg-red-500/20 px-2 py-1 text-xs font-medium text-red-300 hover:bg-red-500/30 disabled:opacity-40"
-                          >
-                            Block IP
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onMonitor(a)}
-                            className="rounded-md bg-amber-500/15 px-2 py-1 text-xs font-medium text-amber-200 hover:bg-amber-500/25"
-                          >
-                            Monitor
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onIgnore(a)}
-                            className="rounded-md bg-white/10 px-2 py-1 text-xs text-ng-muted hover:bg-white/15"
-                          >
-                            Ignore
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {(alertsState.data?.items ?? []).length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-ng-muted">
-                      No alerts yet. Send flows to <code className="text-ng-accent">/api/analyze</code>
-                      .
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section className="grid gap-6 lg:grid-cols-2">
-          <div className="rounded-xl border border-ng-border bg-ng-card p-4">
-            <h3 className="mb-2 text-sm font-semibold text-ng-muted">Threat breakdown</h3>
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={pieData}
-                    dataKey="value"
-                    nameKey="name"
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={50}
-                    outerRadius={90}
-                    paddingAngle={2}
-                  >
-                    {pieData.map((_, i) => (
-                      <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-          <div className="rounded-xl border border-ng-border bg-ng-card p-4">
-            <h3 className="mb-2 text-sm font-semibold text-ng-muted">Traffic volume (logs)</h3>
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={timeSeries}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                  <XAxis dataKey="hour" tick={{ fill: "#9ca3af", fontSize: 10 }} />
-                  <YAxis tick={{ fill: "#9ca3af", fontSize: 10 }} />
-                  <Tooltip />
-                  <Bar dataKey="count" fill="#22d3ee" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </section>
-
-        <section className="rounded-xl border border-ng-border bg-ng-card p-4">
-          <h3 className="mb-4 text-sm font-semibold text-ng-muted">Model performance (hold-out)</h3>
-          {perfState.err && (
-            <p className="text-sm text-amber-300">Metrics unavailable: {perfState.err}</p>
-          )}
-          {perfState.data && (
-            <div className="grid gap-6 lg:grid-cols-3">
-              <div>
-                <p className="text-xs text-ng-muted">Accuracy</p>
-                <p className="text-2xl font-semibold">
-                  {Number(perfState.data.accuracy).toFixed(3)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-ng-muted">F1 (weighted)</p>
-                <p className="text-2xl font-semibold">
-                  {Number(perfState.data.f1_weighted).toFixed(3)}
-                </p>
-              </div>
-              <div className="lg:col-span-1" />
-              {cm && labels && (
-                <div className="lg:col-span-3 overflow-x-auto">
-                  <p className="mb-2 text-xs text-ng-muted">Confusion matrix</p>
-                  <table className="border-collapse text-xs">
-                    <thead>
-                      <tr>
-                        <th className="p-1" />
-                        {labels.map((l) => (
-                          <th key={l} className="p-1 text-ng-muted">
-                            {l}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {cm.map((row, i) => (
-                        <tr key={i}>
-                          <td className="p-1 pr-2 font-medium text-ng-muted">{labels[i]}</td>
-                          {row.map((c, j) => (
-                            <td key={j} className="border border-ng-border p-1 text-center">
-                              {c}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-        </section>
-
-        <section>
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-ng-muted">
-            Blocked IPs
-          </h2>
-          <ul className="rounded-xl border border-ng-border bg-ng-card divide-y divide-ng-border">
-            {(blockedState.data?.items ?? []).length === 0 && (
-              <li className="px-4 py-6 text-sm text-ng-muted">No blocked IPs</li>
-            )}
-            {(blockedState.data?.items ?? []).map((b) => (
-              <li key={b.ip} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
-                <span className="font-mono text-sm">{b.ip}</span>
-                <span className="text-xs text-ng-muted">{b.blocked_at}</span>
-                <span
-                  className={`rounded-full px-2 py-0.5 text-xs ${
-                    b.firewall_applied ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/15 text-amber-200"
-                  }`}
-                >
-                  {b.firewall_applied ? "Firewall applied" : "Recorded only"}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      </main>
-
-      {modalIp && (
-        <BlockModal ip={modalIp} onClose={() => setModalIp(null)} onConfirm={confirmBlock} />
+    <div className="w-full max-w-md rounded-2xl border border-cyan-400/30 bg-[#0a0f1c]/70 p-7 shadow-[0_0_24px_rgba(0,195,255,0.25)]">
+      <h2 className="mb-5 text-center text-3xl font-semibold text-white">{type === "login" ? "Login" : "Create Account"}</h2>
+      {type === "signup" && <input className="ng-input" placeholder="Full Name" value={fullName} onChange={(e) => setFullName(e.target.value)} />}
+      <input className="ng-input mt-3" placeholder="Email Address" value={email} onChange={(e) => setEmail(e.target.value)} />
+      <input className="ng-input mt-3" type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
+      {type === "signup" && <input className="ng-input mt-3" type="password" placeholder="Confirm Password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />}
+      {type === "signup" && (
+        <label className="mt-3 flex items-center gap-2 text-sm text-cyan-100">
+          <input type="checkbox" checked={terms} onChange={(e) => setTerms(e.target.checked)} />
+          I agree to Terms and Privacy Policy
+        </label>
       )}
+      {error && <p className="mt-3 text-sm text-rose-300">{error}</p>}
+      <button onClick={submit} className="mt-4 w-full rounded-lg bg-cyan-500 py-3 font-semibold text-slate-900 hover:bg-cyan-300"> {type === "login" ? "LOGIN" : "SIGN UP"} </button>
     </div>
   );
+}
+
+function Dashboard({ onLogout, onNavigate }: { onLogout: () => void; onNavigate: (k: string) => void }) {
+  const [scanId, setScanId] = useState<string | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState<"Secure" | "Threat Detected">("Secure");
+  const [issues, setIssues] = useState(0);
+  const [threats, setThreats] = useState<{ name: string; type: string; time: string }[]>([]);
+  const data = useMemo(() => Array.from({ length: 12 }).map((_, i) => ({ t: `${i}:00`, up: Math.max(2, Math.round((Math.sin(i / 2) + 1) * 8)), down: Math.max(2, Math.round((Math.cos(i / 2) + 1) * 8)) })), []);
+  const runScan = async () => {
+    const scan = await startScan();
+    setScanId(scan.session_id);
+    setProgress(0);
+    const timer = setInterval(async () => {
+      const state = await getScanStatus(scan.session_id);
+      setProgress(state.progress);
+      if (state.status === "complete") {
+        setStatus(state.result.system_status);
+        setIssues(state.result.issues_found);
+        setThreats(state.result.threats);
+        clearInterval(timer);
+      }
+    }, 1000);
+  };
+  return (
+    <PageFrame title="Dashboard" bg="/assets/dashboard-bg.png" onLogout={onLogout} active="Dashboard" onNavigate={onNavigate}>
+      <div className="mb-5 grid gap-4 md:grid-cols-4">
+        <div className="glass-card md:col-span-2"><p className="text-cyan-100">System Status</p><p className={`text-2xl font-bold ${status === "Secure" ? "text-emerald-300" : "text-rose-300"}`}>{status}</p></div>
+        <div className="glass-card"><p className="text-cyan-100">AI Analysis</p><p className="text-3xl font-bold text-cyan-200">{issues}</p></div>
+        <div className="glass-card"><p className="text-cyan-100">Alerts</p><p className="text-3xl font-bold text-cyan-200">{threats.length}</p></div>
+      </div>
+      <div className="mb-5 rounded-xl border border-cyan-400/30 bg-[#0a0f1c]/70 p-4">
+        <div className="mb-2 flex items-center justify-between"><h3 className="text-lg text-white">Network Scan</h3><button onClick={runScan} className="rounded-lg bg-cyan-500 px-4 py-2 font-semibold text-slate-900">Start Scan</button></div>
+        <div className="h-2 rounded-full bg-slate-900"><div className="h-2 rounded-full bg-cyan-300 transition-all" style={{ width: `${progress}%` }} /></div>
+        <p className="mt-2 text-sm text-cyan-100">{scanId ? `Scanning... ${progress}%` : "No active scan"}</p>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="glass-card">
+          <h3 className="mb-3 text-white">Network Traffic</h3>
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={data}><CartesianGrid stroke="#1e293b" /><XAxis dataKey="t" tick={{ fill: "#a5f3fc" }} /><YAxis tick={{ fill: "#a5f3fc" }} /><Tooltip /><Line type="monotone" dataKey="up" stroke="#00c3ff" /><Line type="monotone" dataKey="down" stroke="#38bdf8" /></LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className="glass-card">
+          <h3 className="mb-3 text-white">Threats Detected</h3>
+          {threats.length === 0 ? <p className="text-cyan-100">No threats found.</p> : threats.map((t, i) => <div key={`${t.name}-${i}`} className="mb-2 flex justify-between border-b border-cyan-400/20 pb-2 text-cyan-100"><span>{t.name}</span><span>{t.type}</span></div>)}
+        </div>
+      </div>
+    </PageFrame>
+  );
+}
+
+function History({ onLogout, onNavigate }: { onLogout: () => void; onNavigate: (k: string) => void }) {
+  const [items, setItems] = useState<HistoryItem[]>([]);
+  const [selected, setSelected] = useState<HistoryItem | null>(null);
+  useEffect(() => {
+    getHistory().then((res) => setItems(res.items));
+  }, []);
+  return (
+    <PageFrame title="History" bg="/assets/history-bg.png" onLogout={onLogout} active="History" onNavigate={onNavigate}>
+      <div className="overflow-hidden rounded-xl border border-cyan-400/20 bg-[#0a0f1c]/70">
+        <table className="w-full text-left text-cyan-100">
+          <thead className="bg-[#0b1530]"><tr><th className="p-3">Device Name</th><th className="p-3">Date & Time</th><th className="p-3">Threats</th><th className="p-3">Details</th></tr></thead>
+          <tbody>{items.map((row) => <tr key={row.id} className="border-t border-cyan-400/10"><td className="p-3">{row.device_name}</td><td className="p-3">{new Date(row.date_time).toLocaleString()}</td><td className="p-3">{row.threats_identified}</td><td className="p-3"><button className="rounded border border-cyan-300/30 px-3 py-1" onClick={() => setSelected(row)}>View</button></td></tr>)}</tbody>
+        </table>
+      </div>
+      {selected && (
+        <div className="mt-5 rounded-xl border border-cyan-400/30 bg-[#0a0f1c]/80 p-4 text-cyan-100">
+          <h3 className="text-xl text-white">Record Details</h3>
+          <p>IP: {selected.device_details.ip}</p>
+          <p>Firewall: {selected.device_details.firewall_status}</p>
+          <p className="mt-3 text-cyan-200">Threat List:</p>
+          {selected.threats.map((t, i) => <p key={`${t.name}-${i}`}>- {t.name} ({t.type}) at {t.time}</p>)}
+        </div>
+      )}
+    </PageFrame>
+  );
+}
+
+export default function App() {
+  const [user, setUser] = useState<User | null>(() => {
+    const raw = localStorage.getItem("ng_user");
+    return raw ? (JSON.parse(raw) as User) : null;
+  });
+  const [page, setPage] = useState<"splash" | "login" | "signup" | "dashboard" | "history">("splash");
+  useEffect(() => {
+    const t = setTimeout(() => setPage(user ? "dashboard" : "login"), 2200);
+    return () => clearTimeout(t);
+  }, [user]);
+  const logout = () => {
+    localStorage.removeItem("ng_user");
+    setUser(null);
+    setPage("login");
+  };
+  const nav = (key: string) => setPage(key === "History" ? "history" : "dashboard");
+  if (page === "splash") return <Splash />;
+  if (!user && page !== "signup") {
+    return (
+      <div className="auth-bg" style={{ backgroundImage: "url('/assets/login-bg.png')" }}>
+        <div className="auth-overlay">
+          <AuthCard type="login" onDone={(u) => { setUser(u); setPage("dashboard"); }} />
+          <button className="mt-4 text-cyan-100 underline" onClick={() => setPage("signup")}>Need an account? Sign up</button>
+        </div>
+      </div>
+    );
+  }
+  if (!user && page === "signup") {
+    return (
+      <div className="auth-bg" style={{ backgroundImage: "url('/assets/signup-bg.png')" }}>
+        <div className="auth-overlay">
+          <AuthCard type="signup" onDone={(u) => { setUser(u); setPage("dashboard"); }} />
+          <button className="mt-4 text-cyan-100 underline" onClick={() => setPage("login")}>Already have an account? Login</button>
+        </div>
+      </div>
+    );
+  }
+  return page === "history" ? <History onLogout={logout} onNavigate={nav} /> : <Dashboard onLogout={logout} onNavigate={nav} />;
 }

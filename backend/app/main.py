@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from random import choice, random, randint
+from time import time
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +26,7 @@ from .email_alerts import send_attack_alert
 from .firewall import apply_iptables_drop
 from .ip_policy import is_blocked_target
 from .ml_inference import load_metrics, ml_service
-from .schemas import AlertActionRequest, AnalyzeRequest, BlockIpRequest
+from .schemas import AlertActionRequest, AnalyzeRequest, BlockIpRequest, LoginRequest, SignupRequest
 from .security import require_block_api_key
 
 
@@ -37,6 +39,10 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="NetGuard AI SOC API", version="1.0.0", lifespan=lifespan)
 
 _settings = get_settings()
+_users: dict[str, dict[str, str]] = {}
+_scan_sessions: dict[str, dict[str, object]] = {}
+_threat_names = ["Tracker.exe", "Trojan.Bat", "Worm.autorun.exe", "Backdoor.X", "Ransom.Lock"]
+_threat_types = ["Spyware", "Malware", "Worm", "Trojan", "Ransomware"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_settings["cors_origins"],
@@ -60,6 +66,115 @@ def health():
         "mongodb": mongo_ok,
         "model_loaded": ml_service.is_loaded,
     }
+
+
+@app.post("/signup")
+@app.post("/api/signup")
+def signup(body: SignupRequest):
+    key = body.email.lower().strip()
+    if key in _users:
+        raise HTTPException(status_code=409, detail="Email already exists")
+    _users[key] = {"full_name": body.full_name.strip(), "password": body.password}
+    return {"ok": True, "message": "Account created", "user": {"full_name": body.full_name, "email": key}}
+
+
+@app.post("/login")
+@app.post("/api/login")
+def login(body: LoginRequest):
+    key = body.email.lower().strip()
+    user = _users.get(key)
+    if not user or user["password"] != body.password:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    return {"ok": True, "token": f"demo-token-{key}", "user": {"full_name": user["full_name"], "email": key}}
+
+
+@app.post("/scan")
+@app.post("/api/scan")
+def scan():
+    session_id = f"sess-{int(time() * 1000)}-{randint(100, 999)}"
+    threat_count = randint(0, 4)
+    threats: list[dict[str, str]] = []
+    for _ in range(threat_count):
+        threats.append(
+            {
+                "name": choice(_threat_names),
+                "type": choice(_threat_types),
+                "time": f"{randint(10, 59)}:{randint(10, 59)} AM",
+            }
+        )
+    _scan_sessions[session_id] = {
+        "started_at": time(),
+        "duration": randint(6, 12),
+        "threats": threats,
+        "device_name": "My PC",
+        "ip": f"192.168.1.{randint(2, 240)}",
+    }
+    return {"ok": True, "session_id": session_id}
+
+
+@app.get("/api/scan/{session_id}")
+def scan_progress(session_id: str):
+    session = _scan_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Scan session not found")
+    elapsed = time() - float(session["started_at"])
+    duration = float(session["duration"])
+    progress = min(100, int((elapsed / duration) * 100))
+    done = progress >= 100
+    status = "complete" if done else "scanning"
+    return {
+        "session_id": session_id,
+        "status": status,
+        "progress": progress,
+        "result": {
+            "device_name": session["device_name"],
+            "device_ip": session["ip"],
+            "firewall_status": "Enabled",
+            "threats": session["threats"] if done else [],
+            "issues_found": len(session["threats"]) if done else 0,
+            "system_status": "Threat Detected" if done and len(session["threats"]) > 0 else "Secure",
+        },
+    }
+
+
+@app.get("/history")
+@app.get("/api/history")
+def history(limit: int = 10):
+    items: list[dict[str, object]] = []
+    for idx, alert in enumerate(list_alerts(limit=limit), start=1):
+        items.append(
+            {
+                "id": alert["_id"],
+                "device_name": f"My PC {idx}",
+                "date_time": alert.get("created_at"),
+                "threats_identified": 1 if alert.get("label") and alert.get("label") != "Normal" else 0,
+                "device_details": {
+                    "ip": alert.get("source_ip") or "192.168.1.101",
+                    "firewall_status": "Enabled",
+                },
+                "threats": [
+                    {
+                        "name": alert.get("label", "Unknown"),
+                        "type": "Anomaly",
+                        "time": str(alert.get("created_at", ""))[11:19],
+                    }
+                ],
+            }
+        )
+    if not items:
+        # fallback demo history
+        for i in range(1, 5):
+            items.append(
+                {
+                    "id": f"demo-{i}",
+                    "device_name": "My PC",
+                    "date_time": f"2026-04-0{i}T10:3{i}:00Z",
+                    "threats_identified": randint(0, 3),
+                    "device_details": {"ip": f"192.168.1.{100+i}", "firewall_status": "Enabled"},
+                    "threats": [{"name": choice(_threat_names), "type": choice(_threat_types), "time": "10:30 AM"}],
+                }
+            )
+    return {"items": items}
 
 
 @app.post("/api/analyze")
