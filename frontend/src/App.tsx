@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   CartesianGrid,
   Cell,
@@ -12,7 +12,16 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { getHistory, getScanStatus, login, signup, startScan, type HistoryItem } from "./api";
+import {
+  getDashboardSummary,
+  getHistory,
+  getScanStatus,
+  login,
+  signup,
+  startScan,
+  type DashboardSummary,
+  type HistoryItem,
+} from "./api";
 import {
   IconActivity,
   IconAlertCircle,
@@ -65,26 +74,8 @@ const C = {
   text: "#ffffff",
 };
 
-type AlertRow = {
-  time: string;
-  sourceIp: string;
-  destIp: string;
-  type: string;
-  status: "Critical" | "Warning" | "Normal";
-};
-
-const MOCK_ALERT_ROWS: AlertRow[] = [
-  { time: "15:34:22", sourceIp: "192.168.1.15", destIp: "10.0.0.23", type: "DDoS Attack", status: "Critical" },
-  { time: "15:10:11", sourceIp: "172.16.5.30", destIp: "192.168.0.5", type: "Port Scan", status: "Warning" },
-  { time: "14:45:07", sourceIp: "10.0.1.12", destIp: "172.16.8.40", type: "DoS Attack", status: "Critical" },
-  { time: "14:20:03", sourceIp: "192.168.2.5", destIp: "10.0.0.12", type: "Normal", status: "Normal" },
-];
-
-const PIE_DATA = [
-  { name: "DDoS", value: 45, color: C.red },
-  { name: "DoS", value: 35, color: C.green },
-  { name: "PortScan", value: 20, color: C.blue },
-];
+/** Pie slice colors cycle for attack labels from the API */
+const PIE_PALETTE = [C.red, C.green, C.blue, C.orange, "#6f42c1", "#fd7e14", "#20c997", "#e83e8c"];
 
 function formatInt(n: number) {
   return n.toLocaleString("en-US");
@@ -104,7 +95,7 @@ function useMediaQuery(query: string) {
   return matches;
 }
 
-function StatusBadge({ status }: { status: AlertRow["status"] }) {
+function StatusBadge({ status }: { status: "Critical" | "Warning" | "Normal" }) {
   const styles =
     status === "Critical"
       ? "bg-[#dc3545]/20 text-[#dc3545] border-[#dc3545]/50"
@@ -387,17 +378,48 @@ function DashboardPage({
 }) {
   const [scanId, setScanId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [dashLoading, setDashLoading] = useState(true);
+  const [dashError, setDashError] = useState<string | null>(null);
   const isNarrowChart = useMediaQuery("(max-width: 639px)");
 
-  const traffic24h = useMemo(
-    () =>
-      Array.from({ length: 24 }).map((_, i) => ({
-        hour: `${String(i).padStart(2, "0")}:00`,
-        normal: Math.round(80000 + Math.sin(i / 3) * 25000 + Math.random() * 8000),
-        attack: Math.round(500 + Math.cos(i / 2) * 400 + (i > 14 && i < 20 ? 8000 : 0) + Math.random() * 500),
-      })),
-    []
-  );
+  const refreshSummary = useCallback(async () => {
+    setDashLoading(true);
+    setDashError(null);
+    try {
+      const data = await getDashboardSummary();
+      setSummary(data);
+    } catch (e) {
+      setDashError(e instanceof Error ? e.message : "Failed to load dashboard data");
+      setSummary(null);
+    } finally {
+      setDashLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshSummary();
+  }, [refreshSummary]);
+
+  const traffic24h = useMemo(() => {
+    if (summary?.traffic_hourly?.length) return summary.traffic_hourly;
+    return Array.from({ length: 24 }, (_, i) => ({
+      hour: `${String(i).padStart(2, "0")}:00`,
+      normal: 0,
+      attack: 0,
+    }));
+  }, [summary]);
+
+  const pieSlices = useMemo(() => {
+    const dist = summary?.attack_distribution ?? [];
+    return dist.map((d, i) => ({
+      name: d.label,
+      value: Math.max(0, d.count),
+      color: PIE_PALETTE[i % PIE_PALETTE.length],
+    }));
+  }, [summary]);
+
+  const metrics = summary?.metrics;
 
   const runScan = async () => {
     const scan = await startScan();
@@ -408,138 +430,200 @@ function DashboardPage({
       setProgress(state.progress);
       if (state.status === "complete") {
         clearInterval(timer);
+        await refreshSummary();
       }
     }, 1000);
   };
 
+  const recentRows = summary?.recent_activity ?? [];
+  const highlight = summary?.highlight;
+
   return (
     <AppShell user={user} activeNav={activeNav} onNavigate={onNavigate} onLogout={onLogout}>
       <div className="flex min-w-0 flex-col gap-4 sm:gap-5">
+        {dashError && (
+          <div
+            className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100"
+            role="alert"
+          >
+            {dashError}
+            <button type="button" className="ml-3 underline" onClick={() => refreshSummary()}>
+              Retry
+            </button>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 gap-3 min-[480px]:grid-cols-2 xl:grid-cols-4">
           <MetricCard
-            label="Total Traffic"
-            value={formatInt(1256780)}
+            label="Total traffic (flows)"
+            value={dashLoading && !summary ? "—" : formatInt(metrics?.total_flows ?? 0)}
             icon={<IconWave className="text-[#8b949e]" />}
             iconWrapClass="bg-[#21262d]"
           />
           <MetricCard
-            label="Active Threats"
-            value="12"
+            label="Active threats (open alerts)"
+            value={dashLoading && !summary ? "—" : formatInt(metrics?.active_alerts ?? 0)}
             icon={<IconAlertTriangle className="text-[#dc3545]" />}
             iconWrapClass="bg-[#dc3545]/15"
           />
           <MetricCard
-            label="Normal Packets"
-            value={formatInt(1230540)}
+            label="Normal (flows)"
+            value={dashLoading && !summary ? "—" : formatInt(metrics?.normal_flows ?? 0)}
             icon={<IconCheckCircle className="text-[#28a745]" />}
             iconWrapClass="bg-[#28a745]/15"
           />
           <MetricCard
-            label="Attack Packets"
-            value={formatInt(26240)}
+            label="Attack (flows)"
+            value={dashLoading && !summary ? "—" : formatInt(metrics?.attack_flows ?? 0)}
             icon={<IconAlertCircle className="text-[#dc3545]" />}
             iconWrapClass="bg-[#dc3545]/15"
           />
         </div>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <ChartCard title="Network Traffic Overview" subtitle="Last 24 Hours" className="min-h-0 lg:col-span-2 lg:min-h-[300px]">
+          <ChartCard title="Network Traffic Overview" subtitle="Last 24 Hours (flows analyzed)" className="min-h-0 lg:col-span-2 lg:min-h-[300px]">
             <div className="h-[clamp(200px,58vw,280px)] w-full min-w-0 pt-2 sm:h-[280px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={traffic24h}
-                  margin={{
-                    top: 8,
-                    right: isNarrowChart ? 4 : 12,
-                    left: 0,
-                    bottom: isNarrowChart ? 4 : 0,
-                  }}
-                >
-                  <CartesianGrid stroke="#30363d" strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="hour"
-                    tick={{ fill: C.muted, fontSize: isNarrowChart ? 9 : 11 }}
-                    tickLine={false}
-                    axisLine={{ stroke: C.border }}
-                    interval={isNarrowChart ? 3 : 2}
-                  />
-                  <YAxis
-                    tick={{ fill: C.muted, fontSize: isNarrowChart ? 9 : 11 }}
-                    tickLine={false}
-                    axisLine={{ stroke: C.border }}
-                    tickFormatter={(v) => formatInt(v)}
-                    width={isNarrowChart ? 34 : 52}
-                  />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: C.card, border: `1px solid ${C.border}`, borderRadius: 8 }}
-                    labelStyle={{ color: C.muted }}
-                  />
-                  <Legend
-                    wrapperStyle={{ paddingTop: 8, fontSize: isNarrowChart ? 10 : 12 }}
-                    iconType="line"
-                    formatter={(value) => value as string}
-                  />
-                  <Line type="monotone" dataKey="normal" name="Normal Traffic" stroke={C.green} strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="attack" name="Attack Traffic" stroke={C.red} strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
+              {dashLoading && !summary ? (
+                <p className="flex h-full items-center justify-center text-sm" style={{ color: C.muted }}>
+                  Loading chart…
+                </p>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart
+                    data={traffic24h}
+                    margin={{
+                      top: 8,
+                      right: isNarrowChart ? 4 : 12,
+                      left: 0,
+                      bottom: isNarrowChart ? 4 : 0,
+                    }}
+                  >
+                    <CartesianGrid stroke="#30363d" strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey="hour"
+                      tick={{ fill: C.muted, fontSize: isNarrowChart ? 9 : 11 }}
+                      tickLine={false}
+                      axisLine={{ stroke: C.border }}
+                      interval={isNarrowChart ? 3 : 2}
+                    />
+                    <YAxis
+                      tick={{ fill: C.muted, fontSize: isNarrowChart ? 9 : 11 }}
+                      tickLine={false}
+                      axisLine={{ stroke: C.border }}
+                      tickFormatter={(v) => formatInt(v)}
+                      width={isNarrowChart ? 34 : 52}
+                      allowDecimals={false}
+                    />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: C.card, border: `1px solid ${C.border}`, borderRadius: 8 }}
+                      labelStyle={{ color: C.muted }}
+                    />
+                    <Legend
+                      wrapperStyle={{ paddingTop: 8, fontSize: isNarrowChart ? 10 : 12 }}
+                      iconType="line"
+                      formatter={(value) => value as string}
+                    />
+                    <Line type="monotone" dataKey="normal" name="Normal Traffic" stroke={C.green} strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="attack" name="Attack Traffic" stroke={C.red} strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
             </div>
           </ChartCard>
-          <ChartCard title="Attack Distribution" className="min-h-0 lg:min-h-[300px]">
-            <div className="flex h-[clamp(200px,65vw,280px)] w-full min-w-0 items-center justify-center pt-2 sm:h-[280px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={PIE_DATA}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={isNarrowChart ? 38 : 56}
-                    outerRadius={isNarrowChart ? 62 : 86}
-                    paddingAngle={2}
-                    dataKey="value"
-                    label={
-                      isNarrowChart
-                        ? false
-                        : ({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`
-                    }
-                  >
-                    {PIE_DATA.map((entry) => (
-                      <Cell key={entry.name} fill={entry.color} stroke={C.border} strokeWidth={1} />
-                    ))}
-                  </Pie>
-                  <Tooltip contentStyle={{ backgroundColor: C.card, border: `1px solid ${C.border}`, borderRadius: 8 }} />
-                </PieChart>
-              </ResponsiveContainer>
+          <ChartCard title="Attack Distribution" subtitle="By label (non-normal flows)" className="min-h-0 lg:min-h-[300px]">
+            <div className="flex h-[clamp(200px,65vw,280px)] w-full min-w-0 flex-col items-center justify-center pt-2 sm:h-[280px]">
+              {pieSlices.length === 0 ? (
+                <p className="px-2 text-center text-sm" style={{ color: C.muted }}>
+                  No attack labels yet. Send flows to <code className="text-xs">POST /api/analyze</code>.
+                </p>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={pieSlices}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={isNarrowChart ? 38 : 56}
+                      outerRadius={isNarrowChart ? 62 : 86}
+                      paddingAngle={2}
+                      dataKey="value"
+                      nameKey="name"
+                      label={
+                        isNarrowChart
+                          ? false
+                          : ({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`
+                      }
+                    >
+                      {pieSlices.map((entry) => (
+                        <Cell key={entry.name} fill={entry.color} stroke={C.border} strokeWidth={1} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={{ backgroundColor: C.card, border: `1px solid ${C.border}`, borderRadius: 8 }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
             </div>
           </ChartCard>
         </div>
 
-        <div
-          className="rounded-[10px] border bg-gradient-to-r from-[#dc3545] via-[#c82333] to-[#bd2130] p-3 shadow-lg sm:p-4"
-          style={{ borderColor: "rgba(255,255,255,0.15)" }}
-        >
-          <p className="flex flex-wrap items-center gap-2 text-base font-bold text-white sm:text-lg">
-            <span aria-hidden>⚠️</span> <span>ALERT: DDoS Attack Detected!</span>
-          </p>
-          <p className="mt-2 break-words text-xs text-white/90 sm:text-sm">
-            Source IP: 192.168.1.15 · Confidence: 95%
-            {scanId != null && <span className="block pt-1 text-white/70 sm:ml-3 sm:inline sm:pt-0">· Scan: {progress}%</span>}
-          </p>
-          <button
-            type="button"
-            onClick={runScan}
-            className="mt-3 w-full rounded-md bg-white/20 px-3 py-2 text-xs font-semibold text-white backdrop-blur hover:bg-white/30 sm:w-auto sm:py-1.5"
+        {highlight ? (
+          <div
+            className="rounded-[10px] border bg-gradient-to-r from-[#dc3545] via-[#c82333] to-[#bd2130] p-3 shadow-lg sm:p-4"
+            style={{ borderColor: "rgba(255,255,255,0.15)" }}
           >
-            Run network scan
-          </button>
-        </div>
+            <p className="flex flex-wrap items-center gap-2 text-base font-bold text-white sm:text-lg">
+              <span aria-hidden>⚠️</span> <span>ALERT: {highlight.label}</span>
+            </p>
+            <p className="mt-2 break-words text-xs text-white/90 sm:text-sm">
+              Source IP: {highlight.source_ip ?? "—"} · Confidence: {(highlight.confidence * 100).toFixed(0)}%
+              {scanId != null && (
+                <span className="block pt-1 text-white/70 sm:ml-3 sm:inline sm:pt-0">· Demo scan: {progress}%</span>
+              )}
+            </p>
+            <button
+              type="button"
+              onClick={runScan}
+              className="mt-3 w-full rounded-md bg-white/20 px-3 py-2 text-xs font-semibold text-white backdrop-blur hover:bg-white/30 sm:w-auto sm:py-1.5"
+            >
+              Run demo network scan
+            </button>
+          </div>
+        ) : (
+          <div
+            className="rounded-[10px] border p-3 text-sm shadow-lg sm:p-4"
+            style={{ backgroundColor: C.card, borderColor: C.border, color: C.muted }}
+          >
+            <p className="text-white">No attack alert highlighted yet.</p>
+            <p className="mt-1 text-xs sm:text-sm">
+              Open alerts with non-normal labels appear here. Ingest traffic via{" "}
+              <code className="text-[#8b949e]">POST /api/analyze</code>.
+            </p>
+            <button
+              type="button"
+              onClick={runScan}
+              className="mt-3 w-full rounded-md border px-3 py-2 text-xs font-semibold sm:w-auto"
+              style={{ borderColor: C.border, color: C.text }}
+            >
+              Run demo network scan
+            </button>
+            {scanId != null && <p className="mt-2 text-xs text-[#8b949e]">Demo scan: {progress}%</p>}
+          </div>
+        )}
 
         <div
           className="overflow-hidden rounded-[10px] border shadow-lg"
           style={{ backgroundColor: C.card, borderColor: C.border, boxShadow: "0 4px 24px rgba(0,0,0,0.35)" }}
         >
-          <div className="border-b px-3 py-2.5 sm:px-4 sm:py-3" style={{ borderColor: C.border }}>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2.5 sm:px-4 sm:py-3" style={{ borderColor: C.border }}>
             <h2 className="text-sm font-semibold sm:text-base">Recent Alerts</h2>
+            <button
+              type="button"
+              className="text-xs font-medium sm:text-sm"
+              style={{ color: C.blue }}
+              onClick={() => refreshSummary()}
+            >
+              Refresh
+            </button>
           </div>
           <div className="-mx-3 overflow-x-auto overscroll-x-contain px-3 sm:mx-0 sm:px-0">
             <table className="w-full min-w-[520px] text-left text-xs sm:min-w-[640px] sm:text-sm">
@@ -553,25 +637,41 @@ function DashboardPage({
                 </tr>
               </thead>
               <tbody>
-                {MOCK_ALERT_ROWS.map((row, i) => (
-                  <tr key={`${row.time}-${row.sourceIp}-${i}`} className="border-b" style={{ borderColor: C.border }}>
-                    <td className="whitespace-nowrap px-2 py-2.5 tabular-nums sm:px-4 sm:py-3" style={{ color: C.text }}>
-                      {row.time}
-                    </td>
-                    <td className="max-w-[120px] truncate px-2 py-2.5 font-mono text-[11px] sm:max-w-none sm:px-4 sm:py-3 sm:text-xs" style={{ color: C.muted }} title={row.sourceIp}>
-                      {row.sourceIp}
-                    </td>
-                    <td className="max-w-[120px] truncate px-2 py-2.5 font-mono text-[11px] sm:max-w-none sm:px-4 sm:py-3 sm:text-xs" style={{ color: C.muted }} title={row.destIp}>
-                      {row.destIp}
-                    </td>
-                    <td className="px-2 py-2.5 sm:px-4 sm:py-3" style={{ color: C.text }}>
-                      {row.type}
-                    </td>
-                    <td className="px-2 py-2.5 sm:px-4 sm:py-3">
-                      <StatusBadge status={row.status} />
+                {recentRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-8 text-center" style={{ color: C.muted }}>
+                      No alerts in the database yet.
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  recentRows.map((row, i) => (
+                    <tr key={`${row.time}-${row.source_ip}-${i}`} className="border-b" style={{ borderColor: C.border }}>
+                      <td className="whitespace-nowrap px-2 py-2.5 tabular-nums sm:px-4 sm:py-3" style={{ color: C.text }}>
+                        {row.time}
+                      </td>
+                      <td
+                        className="max-w-[120px] truncate px-2 py-2.5 font-mono text-[11px] sm:max-w-none sm:px-4 sm:py-3 sm:text-xs"
+                        style={{ color: C.muted }}
+                        title={row.source_ip}
+                      >
+                        {row.source_ip}
+                      </td>
+                      <td
+                        className="max-w-[120px] truncate px-2 py-2.5 font-mono text-[11px] sm:max-w-none sm:px-4 sm:py-3 sm:text-xs"
+                        style={{ color: C.muted }}
+                        title={row.dest_ip}
+                      >
+                        {row.dest_ip}
+                      </td>
+                      <td className="px-2 py-2.5 sm:px-4 sm:py-3" style={{ color: C.text }}>
+                        {row.type}
+                      </td>
+                      <td className="px-2 py-2.5 sm:px-4 sm:py-3">
+                        <StatusBadge status={row.status} />
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -805,7 +905,13 @@ function AuthCard({ type, onDone }: { type: "login" | "signup"; onDone: (u: User
 export default function App() {
   const [user, setUser] = useState<User | null>(() => {
     const raw = localStorage.getItem("ng_user");
-    return raw ? (JSON.parse(raw) as User) : null;
+    const tok = localStorage.getItem("ng_token");
+    if (!raw || !tok) return null;
+    try {
+      return JSON.parse(raw) as User;
+    } catch {
+      return null;
+    }
   });
   const [page, setPage] = useState<"splash" | "login" | "signup" | "app">("splash");
   const [activeNav, setActiveNav] = useState<NavId>("dashboard");
@@ -817,6 +923,7 @@ export default function App() {
 
   const logout = () => {
     localStorage.removeItem("ng_user");
+    localStorage.removeItem("ng_token");
     setUser(null);
     setPage("login");
     setActiveNav("dashboard");

@@ -2,15 +2,17 @@
 Send CICFlowMeter-style flow features to NetGuard AI POST /api/analyze.
 
 Usage:
-  python ingest_flow_to_api.py --url http://localhost:8000 --csv path/to/flows.csv
+  python ingest_flow_to_api.py --url http://localhost:8000 --token demo-token-user@example.com --csv path/to/flows.csv
   python ingest_flow_to_api.py --url http://localhost:8000 --json path/to/one_flow.json
 
 CSV must contain columns matching shared/feature_columns.json plus optional source_ip.
+Set --token or NETGUARD_TOKEN to the login token (same as Authorization: Bearer after login).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -34,22 +36,38 @@ def row_to_payload(row: dict, features: list[str], source_ip: str | None) -> dic
     return {"features": feat, "source_ip": source_ip or row.get("source_ip")}
 
 
+def _headers(token: str | None) -> dict[str, str]:
+    h: dict[str, str] = {}
+    if token:
+        t = token.strip()
+        if not t.lower().startswith("bearer "):
+            t = f"Bearer {t}"
+        h["Authorization"] = t
+    return h
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--url", default="http://127.0.0.1:8000", help="Backend base URL")
+    p.add_argument(
+        "--token",
+        default=os.environ.get("NETGUARD_TOKEN", ""),
+        help="Login token (e.g. demo-token-user@domain.com) or set NETGUARD_TOKEN",
+    )
     p.add_argument("--csv", help="CSV of flow rows")
     p.add_argument("--json", help="Single flow as JSON object of features (+ optional source_ip)")
     p.add_argument("--limit", type=int, default=50, help="Max rows from CSV")
     args = p.parse_args()
     features = load_features()
     base = args.url.rstrip("/")
+    hdr = _headers(args.token or None)
 
     if args.json:
         with open(args.json, encoding="utf-8") as f:
             data = json.load(f)
         src = data.pop("source_ip", None)
         body = {"features": {k: float(data[k]) for k in features}, "source_ip": src}
-        r = httpx.post(f"{base}/api/analyze", json=body, timeout=60.0)
+        r = httpx.post(f"{base}/api/analyze", json=body, headers=hdr, timeout=60.0)
         print(r.status_code, r.text)
         return 0 if r.is_success else 1
 
@@ -65,7 +83,7 @@ def main() -> int:
         except ValueError as e:
             print("skip row:", e)
             continue
-        r = httpx.post(f"{base}/api/analyze", json=body, timeout=60.0)
+        r = httpx.post(f"{base}/api/analyze", json=body, headers=hdr, timeout=60.0)
         print(r.status_code, r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text)
         n += 1
     print(f"Sent {n} flows")

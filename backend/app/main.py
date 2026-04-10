@@ -12,6 +12,7 @@ from .db import (
     get_client,
     add_blocked_ip,
     aggregate_threat_counts,
+    dashboard_summary,
     insert_alert,
     insert_audit,
     insert_log,
@@ -27,7 +28,7 @@ from .firewall import apply_iptables_drop
 from .ip_policy import is_blocked_target
 from .ml_inference import load_metrics, ml_service
 from .schemas import AlertActionRequest, AnalyzeRequest, BlockIpRequest, LoginRequest, SignupRequest
-from .security import require_block_api_key
+from .security import require_user_email
 
 
 @asynccontextmanager
@@ -75,7 +76,12 @@ def signup(body: SignupRequest):
     if key in _users:
         raise HTTPException(status_code=409, detail="Email already exists")
     _users[key] = {"full_name": body.full_name.strip(), "password": body.password}
-    return {"ok": True, "message": "Account created", "user": {"full_name": body.full_name, "email": key}}
+    return {
+        "ok": True,
+        "message": "Account created",
+        "user": {"full_name": body.full_name, "email": key},
+        "token": f"demo-token-{key}",
+    }
 
 
 @app.post("/login")
@@ -90,7 +96,7 @@ def login(body: LoginRequest):
 
 @app.post("/scan")
 @app.post("/api/scan")
-def scan():
+def scan(user_email: str = Depends(require_user_email)):
     session_id = f"sess-{int(time() * 1000)}-{randint(100, 999)}"
     threat_count = randint(0, 4)
     threats: list[dict[str, str]] = []
@@ -103,6 +109,7 @@ def scan():
             }
         )
     _scan_sessions[session_id] = {
+        "user_email": user_email,
         "started_at": time(),
         "duration": randint(6, 12),
         "threats": threats,
@@ -113,9 +120,9 @@ def scan():
 
 
 @app.get("/api/scan/{session_id}")
-def scan_progress(session_id: str):
+def scan_progress(session_id: str, user_email: str = Depends(require_user_email)):
     session = _scan_sessions.get(session_id)
-    if not session:
+    if not session or session.get("user_email") != user_email:
         raise HTTPException(status_code=404, detail="Scan session not found")
     elapsed = time() - float(session["started_at"])
     duration = float(session["duration"])
@@ -139,9 +146,9 @@ def scan_progress(session_id: str):
 
 @app.get("/history")
 @app.get("/api/history")
-def history(limit: int = 10):
+def history(limit: int = 10, user_email: str = Depends(require_user_email)):
     items: list[dict[str, object]] = []
-    for idx, alert in enumerate(list_alerts(limit=limit), start=1):
+    for idx, alert in enumerate(list_alerts(user_email, limit=limit), start=1):
         items.append(
             {
                 "id": alert["_id"],
@@ -161,24 +168,11 @@ def history(limit: int = 10):
                 ],
             }
         )
-    if not items:
-        # fallback demo history
-        for i in range(1, 5):
-            items.append(
-                {
-                    "id": f"demo-{i}",
-                    "device_name": "My PC",
-                    "date_time": f"2026-04-0{i}T10:3{i}:00Z",
-                    "threats_identified": randint(0, 3),
-                    "device_details": {"ip": f"192.168.1.{100+i}", "firewall_status": "Enabled"},
-                    "threats": [{"name": choice(_threat_names), "type": choice(_threat_types), "time": "10:30 AM"}],
-                }
-            )
     return {"items": items}
 
 
 @app.post("/api/analyze")
-def analyze(body: AnalyzeRequest):
+def analyze(body: AnalyzeRequest, user_email: str = Depends(require_user_email)):
     try:
         pred = ml_service.predict_from_features(body.features)
     except ValueError as e:
@@ -198,7 +192,7 @@ def analyze(body: AnalyzeRequest):
         "features": body.features,
         "alert_triggered": should_alert,
     }
-    log_id = insert_log(log_doc)
+    log_id = insert_log(log_doc, user_email)
 
     alert_id = None
     if should_alert:
@@ -209,7 +203,7 @@ def analyze(body: AnalyzeRequest):
             "probabilities": pred["probabilities"],
             "log_id": log_id,
         }
-        alert_id = insert_alert(alert_doc)
+        alert_id = insert_alert(alert_doc, user_email)
         ok, msg = send_attack_alert(
             label=pred["label"],
             confidence=pred["confidence"],
@@ -223,7 +217,8 @@ def analyze(body: AnalyzeRequest):
                     "detail": msg,
                     "log_id": log_id,
                     "alert_id": alert_id,
-                }
+                },
+                user_email,
             )
 
     return {
@@ -237,22 +232,22 @@ def analyze(body: AnalyzeRequest):
 
 
 @app.get("/api/logs")
-def api_logs(limit: int = 200):
-    return {"items": list_logs(limit=limit)}
+def api_logs(limit: int = 200, user_email: str = Depends(require_user_email)):
+    return {"items": list_logs(user_email, limit=limit)}
 
 
 @app.get("/api/alerts")
-def api_alerts(limit: int = 100):
-    return {"items": list_alerts(limit=limit)}
+def api_alerts(limit: int = 100, user_email: str = Depends(require_user_email)):
+    return {"items": list_alerts(user_email, limit=limit)}
 
 
 @app.post("/api/alert-action")
-def alert_action(body: AlertActionRequest):
+def alert_action(body: AlertActionRequest, user_email: str = Depends(require_user_email)):
     action = body.action.lower().strip()
     if action not in ("monitor", "ignore"):
         raise HTTPException(status_code=400, detail="action must be monitor or ignore")
     status = "monitoring" if action == "monitor" else "ignored"
-    ok = update_alert_status(body.alert_id, status)
+    ok = update_alert_status(body.alert_id, status, user_email)
     if not ok:
         raise HTTPException(status_code=404, detail="Alert not found")
     insert_audit(
@@ -260,13 +255,14 @@ def alert_action(body: AlertActionRequest):
             "action": f"alert_{action}",
             "alert_id": body.alert_id,
             "new_status": status,
-        }
+        },
+        user_email,
     )
     return {"ok": True, "alert_id": body.alert_id, "analyst_status": status}
 
 
 @app.post("/api/block-ip")
-def block_ip(body: BlockIpRequest, _api_key: str = Depends(require_block_api_key)):
+def block_ip(body: BlockIpRequest, user_email: str = Depends(require_user_email)):
     allowed, reason = is_blocked_target(body.ip)
     if not allowed:
         insert_audit(
@@ -275,23 +271,26 @@ def block_ip(body: BlockIpRequest, _api_key: str = Depends(require_block_api_key
                 "ip": body.ip,
                 "reason": reason,
                 "analyst": body.analyst,
-            }
+            },
+            user_email,
         )
         raise HTTPException(status_code=400, detail=reason)
 
-    if is_ip_blocked(body.ip):
+    if is_ip_blocked(body.ip, user_email):
         insert_audit(
             {
                 "action": "block_duplicate",
                 "ip": body.ip,
                 "analyst": body.analyst,
-            }
+            },
+            user_email,
         )
         return {"ok": True, "ip": body.ip, "already_blocked": True}
 
     fw_ok, fw_msg = apply_iptables_drop(body.ip)
     add_blocked_ip(
         body.ip,
+        user_email,
         analyst=body.analyst,
         reason=body.reason,
         firewall_ok=fw_ok,
@@ -305,7 +304,8 @@ def block_ip(body: BlockIpRequest, _api_key: str = Depends(require_block_api_key
             "reason": body.reason,
             "firewall_applied": fw_ok,
             "firewall_message": fw_msg,
-        }
+        },
+        user_email,
     )
     return {
         "ok": True,
@@ -316,8 +316,8 @@ def block_ip(body: BlockIpRequest, _api_key: str = Depends(require_block_api_key
 
 
 @app.get("/api/blocked-ips")
-def blocked_ips():
-    return {"items": list_blocked_ips()}
+def blocked_ips(user_email: str = Depends(require_user_email)):
+    return {"items": list_blocked_ips(user_email)}
 
 
 @app.get("/api/model-performance")
@@ -329,11 +329,17 @@ def model_performance():
 
 
 @app.get("/api/analytics/summary")
-def analytics_summary():
-    breakdown = aggregate_threat_counts()
+def analytics_summary(user_email: str = Depends(require_user_email)):
+    breakdown = aggregate_threat_counts(user_email)
     return {"threat_breakdown": breakdown}
 
 
+@app.get("/api/dashboard/summary")
+def api_dashboard_summary(user_email: str = Depends(require_user_email)):
+    """Metrics, hourly traffic, attack mix, recent alerts, and top highlight for the dashboard UI."""
+    return dashboard_summary(user_email)
+
+
 @app.get("/api/audit-logs")
-def audit_logs(limit: int = 50):
-    return {"items": list_audit(limit=limit)}
+def audit_logs(limit: int = 50, user_email: str = Depends(require_user_email)):
+    return {"items": list_audit(user_email, limit=limit)}
