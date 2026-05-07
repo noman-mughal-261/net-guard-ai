@@ -97,3 +97,29 @@ export type DashboardSummary = {
 };
 
 export const getDashboardSummary = () => fetchJson<DashboardSummary>("/api/dashboard/summary");
+
+export type AlertItem = {
+  _id: string;
+  created_at: string;
+  source_ip: string | null;
+  label: string;
+  confidence: number;
+  probabilities: Record<string, number>;
+  log_id: string | null;
+  analyst_status: string;
+};
+
+export const getAlerts = (limit: number = 50) => fetchJson<{ items: AlertItem[] }>(`/api/alerts?limit=${limit}`);
+
+export type LogItem = {
+  _id: string;
+  created_at: string;
+  source_ip: string | null;
+  label: string;
+  confidence: number;
+  probabilities: Record<string, number>;
+  features: Record<string, number>;
+  alert_triggered: boolean;
+};
+
+export const getLogs = (limit: number = 50) => fetchJson<{ items: LogItem[] }>(`/api/logs?limit=${limit}`);

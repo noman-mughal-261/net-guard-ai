@@ -20,6 +20,8 @@ import {
   signup,
   startScan,
   type DashboardSummary,
+  getLogs,
+  type LogItem,
   type HistoryItem,
 } from "./api";
 import {
@@ -383,8 +385,8 @@ function DashboardPage({
   const [dashError, setDashError] = useState<string | null>(null);
   const isNarrowChart = useMediaQuery("(max-width: 639px)");
 
-  const refreshSummary = useCallback(async () => {
-    setDashLoading(true);
+  const refreshSummary = useCallback(async (silent: boolean = false) => {
+    if (!silent) setDashLoading(true);
     setDashError(null);
     try {
       const data = await getDashboardSummary();
@@ -393,12 +395,25 @@ function DashboardPage({
       setDashError(e instanceof Error ? e.message : "Failed to load dashboard data");
       setSummary(null);
     } finally {
-      setDashLoading(false);
+      if (!silent) setDashLoading(false);
     }
   }, []);
 
   useEffect(() => {
     refreshSummary();
+  }, [refreshSummary]);
+
+  // Realtime-ish dashboard updates:
+  // - Polls the summary every few seconds so the traffic chart progresses.
+  // - Uses the same summary payload as the initial load, but avoids flicker by
+  //   keeping `dashLoading` only for the initial fetch.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      refreshSummary(true).catch(() => {
+        // ignore transient polling errors; dashError is updated in refreshSummary
+      });
+    }, 5000);
+    return () => window.clearInterval(timer);
   }, [refreshSummary]);
 
   const traffic24h = useMemo(() => {
@@ -712,24 +727,34 @@ function LiveMonitoringPage(props: {
   onNavigate: (id: NavId) => void;
   onLogout: () => void;
 }) {
-  const [scanId, setScanId] = useState<string | null>(null);
-  const [progress, setProgress] = useState(0);
-  const [log, setLog] = useState<string[]>([]);
+  const [items, setItems] = useState<LogItem[]>([]);
+  const [dashError, setDashError] = useState<string | null>(null);
 
-  const runScan = async () => {
-    setLog((l) => [...l, "Starting scan…"]);
-    const scan = await startScan();
-    setScanId(scan.session_id);
-    setProgress(0);
-    const timer = setInterval(async () => {
-      const state = await getScanStatus(scan.session_id);
-      setProgress(state.progress);
-      if (state.status === "complete") {
-        setLog((l) => [...l, `Complete. Issues: ${state.result.issues_found}`, ...state.result.threats.map((t) => `${t.name} (${t.type})`)]);
-        clearInterval(timer);
-      }
-    }, 1000);
+  const confidenceStatus = (confidence: number): "Critical" | "Warning" | "Normal" => {
+    // Keep consistent with Dashboard thresholds.
+    if (confidence >= 0.85) return "Critical";
+    if (confidence >= 0.5) return "Warning";
+    return "Normal";
   };
+
+  const refresh = useCallback(
+    async (silent: boolean = false) => {
+      if (!silent) setDashError(null);
+      try {
+        const res = await getLogs(50);
+        setItems(res.items);
+      } catch (e) {
+        setDashError(e instanceof Error ? e.message : "Failed to load live alerts");
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    refresh();
+    const timer = window.setInterval(() => refresh(true), 2000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
 
   return (
     <AppShell user={props.user} activeNav={props.activeNav} onNavigate={props.onNavigate} onLogout={props.onLogout}>
@@ -737,26 +762,72 @@ function LiveMonitoringPage(props: {
         className="rounded-[10px] border p-4 shadow-lg sm:p-6"
         style={{ backgroundColor: C.card, borderColor: C.border }}
       >
-        <p className="text-sm text-[#8b949e] sm:text-base">Run a demo network scan against the API session endpoint.</p>
-        <button
-          type="button"
-          onClick={runScan}
-          className="mt-4 w-full rounded-lg px-4 py-2.5 text-sm font-semibold text-white sm:w-auto"
-          style={{ backgroundColor: C.blue }}
+        <p className="text-sm text-[#8b949e] sm:text-base">Realtime attack predictions (stored in MongoDB when label != "Normal").</p>
+
+        {dashError && (
+          <p className="mt-3 text-sm" style={{ color: "#dc3545" }}>
+            {dashError}
+          </p>
+        )}
+
+        <div
+          className="overflow-hidden rounded-[10px] border shadow-lg mt-4"
+          style={{ backgroundColor: C.card, borderColor: C.border, boxShadow: "0 4px 24px rgba(0,0,0,0.35)" }}
         >
-          Start scan
-        </button>
-        {scanId && (
-          <div className="mt-4">
-            <div className="h-2 rounded-full bg-[#21262d]">
-              <div className="h-2 rounded-full transition-all" style={{ width: `${progress}%`, backgroundColor: C.blue }} />
-            </div>
-            <p className="mt-2 text-xs text-[#8b949e]">{progress}%</p>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2.5 sm:px-4 sm:py-3" style={{ borderColor: C.border }}>
+            <h2 className="text-sm font-semibold sm:text-base">Latest Attack Predictions</h2>
           </div>
-        )}
-        {log.length > 0 && (
-          <pre className="mt-4 max-h-48 overflow-auto break-all rounded-lg bg-[#0a0e14] p-3 font-mono text-[11px] text-[#8b949e] sm:text-xs">{log.join("\n")}</pre>
-        )}
+          <div className="-mx-3 overflow-x-auto overscroll-x-contain px-3 sm:mx-0 sm:px-0">
+            <table className="w-full min-w-[520px] text-left text-xs sm:min-w-[640px] sm:text-sm">
+              <thead>
+                <tr style={{ color: C.muted, borderBottom: `1px solid ${C.border}` }} className="border-b">
+                  <th className="whitespace-nowrap px-2 py-2.5 font-medium sm:px-4 sm:py-3">Time</th>
+                  <th className="whitespace-nowrap px-2 py-2.5 font-medium sm:px-4 sm:py-3">Source IP</th>
+                  <th className="whitespace-nowrap px-2 py-2.5 font-medium sm:px-4 sm:py-3">Label</th>
+                  <th className="whitespace-nowrap px-2 py-2.5 font-medium sm:px-4 sm:py-3">Confidence</th>
+                  <th className="whitespace-nowrap px-2 py-2.5 font-medium sm:px-4 sm:py-3">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-6 text-center" style={{ color: C.muted }}>
+                      No attack predictions yet. Generate traffic and the model will populate this list.
+                    </td>
+                  </tr>
+                ) : (
+                  items.map((a, i) => {
+                    const timeStr = a.created_at ? new Date(a.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
+                    const status = confidenceStatus(a.confidence);
+                    return (
+                      <tr key={`${a._id}-${i}`} className="border-b" style={{ borderColor: C.border }}>
+                        <td className="whitespace-nowrap px-2 py-2.5 tabular-nums sm:px-4 sm:py-3" style={{ color: C.text }}>
+                          {timeStr}
+                        </td>
+                        <td
+                          className="max-w-[140px] truncate px-2 py-2.5 font-mono text-[11px] sm:max-w-none sm:px-4 sm:py-3 sm:text-xs"
+                          style={{ color: C.muted }}
+                          title={a.source_ip ?? undefined}
+                        >
+                          {a.source_ip ?? "—"}
+                        </td>
+                        <td className="px-2 py-2.5 sm:px-4 sm:py-3" style={{ color: C.text }}>
+                          {a.label}
+                        </td>
+                        <td className="px-2 py-2.5 sm:px-4 sm:py-3" style={{ color: C.muted }}>
+                          {Math.round(a.confidence * 100)}%
+                        </td>
+                        <td className="px-2 py-2.5 sm:px-4 sm:py-3">
+                          <StatusBadge status={status} />
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </AppShell>
   );

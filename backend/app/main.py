@@ -22,6 +22,7 @@ from .db import (
     list_blocked_ips,
     list_logs,
     update_alert_status,
+    record_traffic_prediction,
 )
 from .email_alerts import send_attack_alert
 from .firewall import apply_iptables_drop
@@ -184,15 +185,24 @@ def analyze(body: AnalyzeRequest, user_email: str = Depends(require_user_email))
     is_attack = pred["label"] != "Normal"
     should_alert = is_attack and pred["confidence"] >= threshold
 
-    log_doc = {
-        "source_ip": body.source_ip,
-        "label": pred["label"],
-        "confidence": pred["confidence"],
-        "probabilities": pred["probabilities"],
-        "features": body.features,
-        "alert_triggered": should_alert,
-    }
-    log_id = insert_log(log_doc, user_email)
+    # Always update counters so the dashboard can show real traffic
+    # without storing every flow document in MongoDB.
+    record_traffic_prediction(user_email, pred["label"])
+
+    log_id = None
+    # Store detailed `logs` only when the model predicts an attack label
+    # (label != "Normal"). This keeps DB size manageable while still
+    # preserving attack context for analysis.
+    if is_attack:
+        log_doc = {
+            "source_ip": body.source_ip,
+            "label": pred["label"],
+            "confidence": pred["confidence"],
+            "probabilities": pred["probabilities"],
+            "features": body.features,
+            "alert_triggered": should_alert,
+        }
+        log_id = insert_log(log_doc, user_email)
 
     alert_id = None
     if should_alert:

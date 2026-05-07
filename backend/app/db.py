@@ -118,6 +118,51 @@ def list_audit(user_email: str, limit: int = 100) -> list[dict]:
     return [_serialize(d) for d in cur]
 
 
+def record_traffic_prediction(user_email: str, predicted_label: str) -> None:
+    """
+    Update lightweight counters for the dashboard.
+
+    Important: we use these counters so we can avoid storing every flow in `logs`
+    (which can overwhelm MongoDB). Detailed `logs` documents are still stored only
+    for high-confidence attacks (see /api/analyze).
+    """
+    db = get_db()
+    uf = _uf(user_email)
+
+    hour = utcnow().replace(minute=0, second=0, microsecond=0)
+    is_normal = predicted_label == "Normal"
+    inc_normal = 1 if is_normal else 0
+    inc_attack = 0 if is_normal else 1
+
+    # Hourly bucket for the traffic graph (Normal vs Attack lines).
+    db.traffic_hourly.update_one(
+        {**uf, "hour": hour},
+        {
+            "$inc": {"normal": inc_normal, "attack": inc_attack},
+            "$setOnInsert": {"normal": 0, "attack": 0, "hour": hour},
+        },
+        upsert=True,
+    )
+
+    # All-time totals for the dashboard metric cards.
+    db.traffic_totals.update_one(
+        uf,
+        {
+            "$inc": {"normal_flows": inc_normal, "attack_flows": inc_attack},
+            "$setOnInsert": {"normal_flows": 0, "attack_flows": 0},
+        },
+        upsert=True,
+    )
+
+    # Per-label counts for the attack distribution pie.
+    if not is_normal:
+        db.traffic_label_counts.update_one(
+            {**uf, "label": predicted_label},
+            {"$inc": {"count": 1}},
+            upsert=True,
+        )
+
+
 def _serialize(doc: dict) -> dict:
     out = dict(doc)
     if "_id" in out:
@@ -129,12 +174,28 @@ def _serialize(doc: dict) -> dict:
 
 
 def aggregate_threat_counts(user_email: str) -> list[dict]:
+    """
+    Returns items like: {"_id": "<label>", "count": <int>}
+
+    Prefers traffic_label_counts counters (works even if we don't store all flows in `logs`).
+    Falls back to aggregating `logs` for backward compatibility.
+    """
+    db = get_db()
+    uf = _uf(user_email)
+
+    if db.traffic_label_counts.find_one(uf) is not None:
+        cur = db.traffic_label_counts.find(uf, {"label": 1, "count": 1})
+        docs = list(cur)
+        docs.sort(key=lambda d: int(d.get("count") or 0), reverse=True)
+        return [{"_id": d.get("label"), "count": int(d.get("count") or 0)} for d in docs]
+
+    # Fallback: older data path stores every flow as a log doc.
     pipeline = [
-        {"$match": _uf(user_email)},
+        {"$match": uf},
         {"$group": {"_id": "$label", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}},
     ]
-    return list(get_db().logs.aggregate(pipeline))
+    return list(db.logs.aggregate(pipeline))
 
 
 def dashboard_summary(user_email: str) -> dict[str, Any]:
@@ -144,25 +205,48 @@ def dashboard_summary(user_email: str) -> dict[str, Any]:
     logs = db.logs
     alerts = db.alerts
 
-    total_flows = logs.count_documents(uf)
-    normal_flows = logs.count_documents({**uf, "label": "Normal"})
-    attack_flows = max(0, total_flows - normal_flows)
+    # Prefer counter-based totals (works when we only store attack logs).
+    totals_doc = db.traffic_totals.find_one(uf, {"normal_flows": 1, "attack_flows": 1})
+    if totals_doc is not None:
+        normal_flows = int(totals_doc.get("normal_flows") or 0)
+        attack_flows = int(totals_doc.get("attack_flows") or 0)
+        total_flows = normal_flows + attack_flows
+    else:
+        # Fallback for older deployments.
+        total_flows = logs.count_documents(uf)
+        normal_flows = logs.count_documents({**uf, "label": "Normal"})
+        attack_flows = max(0, total_flows - normal_flows)
     active_alerts = alerts.count_documents({**uf, "analyst_status": "open"})
 
-    since = utcnow() - timedelta(hours=24)
     bucket_map: dict[datetime, list[int]] = defaultdict(lambda: [0, 0])
-    for doc in logs.find({**uf, "created_at": {"$gte": since}}, {"label": 1, "created_at": 1}):
-        dt = doc["created_at"]
-        if isinstance(dt, str):
-            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
-        hour = dt.replace(minute=0, second=0, microsecond=0)
-        if doc.get("label") == "Normal":
-            bucket_map[hour][0] += 1
-        else:
-            bucket_map[hour][1] += 1
 
     now_floor = utcnow().replace(minute=0, second=0, microsecond=0)
     start_floor = now_floor - timedelta(hours=23)
+
+    # Prefer hourly counters (works when logs doesn't include every flow).
+    for doc in db.traffic_hourly.find(
+        {**uf, "hour": {"$gte": start_floor}},
+        {"hour": 1, "normal": 1, "attack": 1},
+    ):
+        hour_dt = doc["hour"]
+        if isinstance(hour_dt, str):
+            hour_dt = datetime.fromisoformat(hour_dt.replace("Z", "+00:00"))
+        bucket_map[hour_dt][0] = int(doc.get("normal") or 0)
+        bucket_map[hour_dt][1] = int(doc.get("attack") or 0)
+
+    # Fallback for older deployments (every flow stored as a log doc).
+    if not bucket_map:
+        since = utcnow() - timedelta(hours=24)
+        for doc in logs.find({**uf, "created_at": {"$gte": since}}, {"label": 1, "created_at": 1}):
+            dt = doc["created_at"]
+            if isinstance(dt, str):
+                dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+            hour_dt = dt.replace(minute=0, second=0, microsecond=0)
+            if doc.get("label") == "Normal":
+                bucket_map[hour_dt][0] += 1
+            else:
+                bucket_map[hour_dt][1] += 1
+
     traffic_hourly: list[dict[str, Any]] = []
     for i in range(24):
         t = start_floor + timedelta(hours=i)
