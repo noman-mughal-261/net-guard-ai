@@ -833,6 +833,166 @@ function LiveMonitoringPage(props: {
   );
 }
 
+function TrafficAnalyticsPage(props: {
+  user: User;
+  activeNav: NavId;
+  onNavigate: (id: NavId) => void;
+  onLogout: () => void;
+}) {
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const isNarrowChart = useMediaQuery("(max-width: 639px)");
+
+  const refresh = useCallback(async (silent: boolean = false) => {
+    if (!silent) setLoading(true);
+    setError(null);
+    try {
+      const data = await getDashboardSummary();
+      setSummary(data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load analytics");
+      setSummary(null);
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const timer = window.setInterval(() => {
+      refresh(true).catch(() => {
+        // ignore transient polling errors; error state is handled in refresh
+      });
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  const traffic24h = useMemo(() => {
+    if (summary?.traffic_hourly?.length) return summary.traffic_hourly;
+    return Array.from({ length: 24 }, (_, i) => ({
+      hour: `${String(i).padStart(2, "0")}:00`,
+      normal: 0,
+      attack: 0,
+    }));
+  }, [summary]);
+
+  const pieSlices = useMemo(() => {
+    const dist = summary?.attack_distribution ?? [];
+    return dist.map((d, i) => ({
+      name: d.label,
+      value: Math.max(0, d.count),
+      color: PIE_PALETTE[i % PIE_PALETTE.length],
+    }));
+  }, [summary]);
+
+  return (
+    <AppShell user={props.user} activeNav={props.activeNav} onNavigate={props.onNavigate} onLogout={props.onLogout}>
+      <div className="flex min-w-0 flex-col gap-4 sm:gap-5">
+        {error && (
+          <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100" role="alert">
+            {error}
+            <button type="button" className="ml-3 underline" onClick={() => refresh()}>
+              Retry
+            </button>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 gap-3 min-[480px]:grid-cols-2 xl:grid-cols-4">
+          <MetricCard
+            label="Total flows analyzed"
+            value={loading && !summary ? "—" : formatInt(summary?.metrics.total_flows ?? 0)}
+            icon={<IconWave className="text-[#8b949e]" />}
+            iconWrapClass="bg-[#21262d]"
+          />
+          <MetricCard
+            label="Attack flows"
+            value={loading && !summary ? "—" : formatInt(summary?.metrics.attack_flows ?? 0)}
+            icon={<IconAlertTriangle className="text-[#dc3545]" />}
+            iconWrapClass="bg-[#dc3545]/15"
+          />
+          <MetricCard
+            label="Normal flows"
+            value={loading && !summary ? "—" : formatInt(summary?.metrics.normal_flows ?? 0)}
+            icon={<IconCheckCircle className="text-[#28a745]" />}
+            iconWrapClass="bg-[#28a745]/15"
+          />
+          <MetricCard
+            label="Open alerts"
+            value={loading && !summary ? "—" : formatInt(summary?.metrics.active_alerts ?? 0)}
+            icon={<IconBell className="text-[#ffc107]" />}
+            iconWrapClass="bg-[#ffc107]/15"
+          />
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <ChartCard title="Traffic Trend" subtitle="Normal vs attack (last 24h)" className="min-h-0 lg:col-span-2 lg:min-h-[300px]">
+            <div className="h-[clamp(200px,58vw,280px)] w-full min-w-0 pt-2 sm:h-[280px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={traffic24h}
+                  margin={{ top: 8, right: isNarrowChart ? 4 : 12, left: 0, bottom: isNarrowChart ? 4 : 0 }}
+                >
+                  <CartesianGrid stroke="#30363d" strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="hour"
+                    tick={{ fill: C.muted, fontSize: isNarrowChart ? 9 : 11 }}
+                    tickLine={false}
+                    axisLine={{ stroke: C.border }}
+                    interval={isNarrowChart ? 3 : 2}
+                  />
+                  <YAxis
+                    tick={{ fill: C.muted, fontSize: isNarrowChart ? 9 : 11 }}
+                    tickLine={false}
+                    axisLine={{ stroke: C.border }}
+                    tickFormatter={(v) => formatInt(v)}
+                    width={isNarrowChart ? 34 : 52}
+                    allowDecimals={false}
+                  />
+                  <Tooltip contentStyle={{ backgroundColor: C.card, border: `1px solid ${C.border}`, borderRadius: 8 }} />
+                  <Legend wrapperStyle={{ paddingTop: 8, fontSize: isNarrowChart ? 10 : 12 }} iconType="line" />
+                  <Line type="monotone" dataKey="normal" name="Normal" stroke={C.green} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="attack" name="Attack" stroke={C.red} strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </ChartCard>
+
+          <ChartCard title="Attack Mix" subtitle="Distribution by predicted label" className="min-h-0 lg:min-h-[300px]">
+            <div className="flex h-[clamp(200px,65vw,280px)] w-full min-w-0 flex-col items-center justify-center pt-2 sm:h-[280px]">
+              {pieSlices.length === 0 ? (
+                <p className="px-2 text-center text-sm" style={{ color: C.muted }}>
+                  No attack labels yet. Send flows to <code className="text-xs">POST /api/analyze</code>.
+                </p>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={pieSlices}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={isNarrowChart ? 38 : 56}
+                      outerRadius={isNarrowChart ? 62 : 86}
+                      paddingAngle={2}
+                      dataKey="value"
+                      nameKey="name"
+                    >
+                      {pieSlices.map((entry) => (
+                        <Cell key={entry.name} fill={entry.color} stroke={C.border} strokeWidth={1} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={{ backgroundColor: C.card, border: `1px solid ${C.border}`, borderRadius: 8 }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </ChartCard>
+        </div>
+      </div>
+    </AppShell>
+  );
+}
+
 function ReportsPage(props: {
   user: User;
   activeNav: NavId;
@@ -1036,7 +1196,7 @@ export default function App() {
     case "live":
       return <LiveMonitoringPage {...shellProps} />;
     case "analytics":
-      return <PlaceholderPage {...shellProps} message="Traffic analytics view — connect your analytics API here." />;
+      return <TrafficAnalyticsPage {...shellProps} />;
     case "alerts":
       return <PlaceholderPage {...shellProps} message="Dedicated alerts inbox — wire to GET /api/alerts when ready." />;
     case "reports":
