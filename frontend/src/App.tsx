@@ -803,7 +803,7 @@ function LiveMonitoringPage(props: {
         className="rounded-[10px] border p-4 shadow-lg sm:p-6"
         style={{ backgroundColor: C.card, borderColor: C.border }}
       >
-        <p className="text-sm text-[#8b949e] sm:text-base">Realtime attack predictions (stored in MongoDB when label != "Normal").</p>
+        {/* <p className="text-sm text-[#8b949e] sm:text-base">Realtime attack predictions (stored in MongoDB when label != "Normal").</p> */}
 
         {dashError && (
           <p className="mt-3 text-sm" style={{ color: "#dc3545" }}>

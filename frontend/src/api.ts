@@ -30,14 +30,15 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const text = await response.text();
+    let detail: string | undefined;
     try {
       const parsed = JSON.parse(text) as { detail?: string | { msg?: string }[] };
-      if (typeof parsed.detail === "string") throw new Error(parsed.detail);
-      if (Array.isArray(parsed.detail) && parsed.detail[0]?.msg) throw new Error(parsed.detail[0].msg);
-    } catch (e) {
-      if (e instanceof Error && e.message !== text) throw e;
+      if (typeof parsed.detail === "string") detail = parsed.detail;
+      else if (Array.isArray(parsed.detail) && parsed.detail[0]?.msg) detail = parsed.detail[0].msg;
+    } catch {
+      /* plain-text error body (e.g. Internal Server Error) */
     }
-    throw new Error(text || response.statusText);
+    throw new Error(detail || text || response.statusText);
   }
   return response.json() as Promise<T>;
 }
@@ -97,13 +98,14 @@ export const uploadAvatar = async (file: File) => {
   });
   if (!response.ok) {
     const text = await response.text();
+    let detail: string | undefined;
     try {
       const parsed = JSON.parse(text) as { detail?: string };
-      if (typeof parsed.detail === "string") throw new Error(parsed.detail);
-    } catch (e) {
-      if (e instanceof Error && e.message !== text) throw e;
+      if (typeof parsed.detail === "string") detail = parsed.detail;
+    } catch {
+      /* plain-text error body */
     }
-    throw new Error(text || response.statusText);
+    throw new Error(detail || text || response.statusText);
   }
   return response.json() as Promise<{ ok: boolean; avatar_url: string; user: UserProfile }>;
 };
