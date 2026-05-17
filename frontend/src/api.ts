@@ -1,5 +1,11 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
+export type UserProfile = {
+  full_name: string;
+  email: string;
+  avatar_url?: string | null;
+};
+
 export type ThreatRecord = { name: string; type: string; time: string };
 export type HistoryItem = {
   id: string;
@@ -22,8 +28,31 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { ...authHeaders(), ...(init?.headers as Record<string, string>) },
   });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) {
+    const text = await response.text();
+    try {
+      const parsed = JSON.parse(text) as { detail?: string | { msg?: string }[] };
+      if (typeof parsed.detail === "string") throw new Error(parsed.detail);
+      if (Array.isArray(parsed.detail) && parsed.detail[0]?.msg) throw new Error(parsed.detail[0].msg);
+    } catch (e) {
+      if (e instanceof Error && e.message !== text) throw e;
+    }
+    throw new Error(text || response.statusText);
+  }
   return response.json() as Promise<T>;
+}
+
+function bearerOnly(): Record<string, string> {
+  const h: Record<string, string> = {};
+  const t = typeof localStorage !== "undefined" ? localStorage.getItem("ng_token") : null;
+  if (t) h["Authorization"] = `Bearer ${t}`;
+  return h;
+}
+
+export function avatarSrc(url: string | null | undefined): string | undefined {
+  if (!url) return undefined;
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  return `${API_BASE}${url}`;
 }
 
 export const signup = (payload: { full_name: string; email: string; password: string }) =>
@@ -36,13 +65,48 @@ export const signup = (payload: { full_name: string; email: string; password: st
   });
 
 export const login = (payload: { email: string; password: string }) =>
-  fetchJson<{ ok: boolean; token: string; user: { full_name: string; email: string } }>("/api/login", {
+  fetchJson<{ ok: boolean; token: string; user: UserProfile }>("/api/login", {
     method: "POST",
     body: JSON.stringify(payload),
   }).then((data) => {
     if (typeof localStorage !== "undefined" && data.token) localStorage.setItem("ng_token", data.token);
     return data;
   });
+
+export const getMe = () => fetchJson<{ ok: boolean; user: UserProfile }>("/api/me");
+
+export const updateProfile = (payload: { full_name: string }) =>
+  fetchJson<{ ok: boolean; user: UserProfile }>("/api/profile", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+
+export const changePassword = (payload: { current_password: string; new_password: string }) =>
+  fetchJson<{ ok: boolean; message: string }>("/api/profile/password", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+
+export const uploadAvatar = async (file: File) => {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${API_BASE}/api/profile/avatar`, {
+    method: "POST",
+    headers: bearerOnly(),
+    body: form,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    try {
+      const parsed = JSON.parse(text) as { detail?: string };
+      if (typeof parsed.detail === "string") throw new Error(parsed.detail);
+    } catch (e) {
+      if (e instanceof Error && e.message !== text) throw e;
+    }
+    throw new Error(text || response.statusText);
+  }
+  return response.json() as Promise<{ ok: boolean; avatar_url: string; user: UserProfile }>;
+};
 
 export const startScan = () => fetchJson<{ session_id: string }>("/api/scan", { method: "POST" });
 

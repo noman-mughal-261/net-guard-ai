@@ -13,8 +13,10 @@ import {
   YAxis,
 } from "recharts";
 import {
+  avatarSrc,
   getDashboardSummary,
   getHistory,
+  getMe,
   getScanStatus,
   login,
   signup,
@@ -23,7 +25,10 @@ import {
   getLogs,
   type LogItem,
   type HistoryItem,
+  type UserProfile,
 } from "./api";
+import { SettingsPage } from "./SettingsPage";
+import { useTheme } from "./theme";
 import {
   IconActivity,
   IconAlertCircle,
@@ -35,13 +40,19 @@ import {
   IconFileText,
   IconLayoutDashboard,
   IconMenu,
+  IconMoon,
   IconSettings,
   IconShield,
+  IconSun,
   IconWave,
   IconX,
 } from "./Icons";
 
-type User = { full_name: string; email: string };
+type User = UserProfile;
+
+function persistUser(user: User) {
+  localStorage.setItem("ng_user", JSON.stringify(user));
+}
 
 type NavId = "dashboard" | "live" | "analytics" | "alerts" | "reports" | "settings";
 
@@ -63,17 +74,17 @@ const PAGE_TITLE: Record<NavId, string> = {
   settings: "Settings",
 };
 
-/** Design tokens */
+/** Design tokens (CSS variables — see index.css) */
 const C = {
-  bg: "#0a0e14",
-  card: "#161b22",
-  border: "#30363d",
-  blue: "#007bff",
-  green: "#28a745",
-  red: "#dc3545",
-  orange: "#ffc107",
-  muted: "#8b949e",
-  text: "#ffffff",
+  bg: "var(--ng-bg)",
+  card: "var(--ng-card)",
+  border: "var(--ng-border)",
+  blue: "var(--ng-blue)",
+  green: "var(--ng-green)",
+  red: "var(--ng-red)",
+  orange: "var(--ng-orange)",
+  muted: "var(--ng-muted)",
+  text: "var(--ng-text)",
 };
 
 /** Pie slice colors cycle for attack labels from the API */
@@ -124,10 +135,12 @@ function AppShell({
   onLogout: () => void;
   children: ReactNode;
 }) {
+  const { theme, toggleTheme } = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const isLg = useMediaQuery("(min-width: 1024px)");
+  const avatarUrl = avatarSrc(user.avatar_url);
 
   useEffect(() => {
     const close = (e: MouseEvent) => {
@@ -170,7 +183,7 @@ function AppShell({
   };
 
   return (
-    <div className="flex h-[100dvh] w-full max-w-[100vw] overflow-hidden text-white" style={{ backgroundColor: C.bg }}>
+    <div className="flex h-[100dvh] w-full max-w-[100vw] overflow-hidden" style={{ backgroundColor: C.bg, color: C.text }}>
       {!isLg && sidebarOpen && (
         <button
           type="button"
@@ -250,11 +263,21 @@ function AppShell({
           <div className="flex min-w-0 flex-1 items-center justify-end gap-1 sm:gap-2">
             <button
               type="button"
-              className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[#8b949e] transition hover:bg-white/[0.06] hover:text-white"
+              onClick={toggleTheme}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition hover:opacity-80"
+              style={{ color: C.muted }}
+              aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            >
+              {theme === "dark" ? <IconSun /> : <IconMoon />}
+            </button>
+            <button
+              type="button"
+              className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition hover:opacity-80"
+              style={{ color: C.muted }}
               aria-label="Notifications"
             >
               <IconBell />
-              <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-[#dc3545]" />
+              <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full" style={{ backgroundColor: C.red }} />
             </button>
             <div className="relative ml-0.5 sm:ml-2" ref={menuRef}>
               <button
@@ -264,18 +287,24 @@ function AppShell({
                 aria-expanded={menuOpen}
                 className="flex max-w-[100vw] items-center gap-2 rounded-lg py-1.5 pl-1 pr-2 transition hover:bg-white/[0.06] sm:pr-2.5"
               >
-                <span
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white"
-                  style={{ backgroundColor: "#30363d" }}
-                >
-                  {initial}
-                </span>
-                <span className="hidden max-w-[120px] truncate text-sm text-[#8b949e] min-[400px]:inline min-[400px]:max-w-[140px] sm:max-w-[180px]">
+                {avatarUrl ? (
+                  <img src={avatarUrl} alt="" className="h-8 w-8 shrink-0 rounded-full object-cover" />
+                ) : (
+                  <span
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white"
+                    style={{ backgroundColor: C.border }}
+                  >
+                    {initial}
+                  </span>
+                )}
+                <span className="hidden max-w-[120px] truncate text-sm min-[400px]:inline min-[400px]:max-w-[140px] sm:max-w-[180px]" style={{ color: C.muted }}>
                   {user.full_name || user.email}
                 </span>
-                <IconChevronDown
-                  className={`h-[18px] w-[18px] shrink-0 text-[#8b949e] transition-transform duration-200 ease-out ${menuOpen ? "rotate-180" : ""}`}
-                />
+                <span style={{ color: C.muted }}>
+                  <IconChevronDown
+                    className={`h-[18px] w-[18px] shrink-0 transition-transform duration-200 ease-out ${menuOpen ? "rotate-180" : ""}`}
+                  />
+                </span>
               </button>
               {menuOpen && (
                 <div
@@ -284,7 +313,19 @@ function AppShell({
                 >
                   <button
                     type="button"
-                    className="w-full px-4 py-2 text-left text-sm text-[#8b949e] hover:bg-white/[0.06] hover:text-white"
+                    className="w-full px-4 py-2 text-left text-sm transition hover:opacity-90"
+                    style={{ color: C.muted }}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onNavigate("settings");
+                    }}
+                  >
+                    Settings
+                  </button>
+                  <button
+                    type="button"
+                    className="w-full px-4 py-2 text-left text-sm transition hover:opacity-90"
+                    style={{ color: C.muted }}
                     onClick={() => {
                       setMenuOpen(false);
                       onLogout();
@@ -1084,6 +1125,23 @@ function Splash() {
   );
 }
 
+function authFormError(err: unknown, mode: "login" | "signup"): string {
+  const raw = err instanceof Error ? err.message : "Something went wrong. Please try again.";
+  const lower = raw.toLowerCase();
+  if (mode === "login") {
+    if (lower.includes("invalid email or password") || lower.includes("incorrect") || lower.includes("401")) {
+      return "Incorrect email or password.";
+    }
+    if (lower.includes("not authenticated") || lower.includes("unauthorized")) {
+      return "Incorrect email or password.";
+    }
+  }
+  if (mode === "signup" && (lower.includes("already exists") || lower.includes("409"))) {
+    return "An account with this email already exists.";
+  }
+  return raw.length > 120 ? "Something went wrong. Please try again." : raw;
+}
+
 function AuthCard({ type, onDone }: { type: "login" | "signup"; onDone: (u: User) => void }) {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -1091,6 +1149,7 @@ function AuthCard({ type, onDone }: { type: "login" | "signup"; onDone: (u: User
   const [confirm, setConfirm] = useState("");
   const [terms, setTerms] = useState(false);
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const submit = async () => {
     setError("");
     if (!/\S+@\S+\.\S+/.test(email)) return setError("Enter a valid email.");
@@ -1099,11 +1158,20 @@ function AuthCard({ type, onDone }: { type: "login" | "signup"; onDone: (u: User
       if (!fullName.trim()) return setError("Full name is required.");
       if (password !== confirm) return setError("Passwords do not match.");
       if (!terms) return setError("Accept terms to continue.");
-      await signup({ full_name: fullName, email, password });
     }
-    const auth = await login({ email, password });
-    localStorage.setItem("ng_user", JSON.stringify(auth.user));
-    onDone(auth.user);
+    setSubmitting(true);
+    try {
+      if (type === "signup") {
+        await signup({ full_name: fullName, email, password });
+      }
+      const auth = await login({ email, password });
+      persistUser(auth.user);
+      onDone(auth.user);
+    } catch (e) {
+      setError(authFormError(e, type));
+    } finally {
+      setSubmitting(false);
+    }
   };
   return (
     <div
@@ -1121,13 +1189,19 @@ function AuthCard({ type, onDone }: { type: "login" | "signup"; onDone: (u: User
           I agree to the Terms and Privacy Policy
         </label>
       )}
-      {error && <p className="mt-3 text-sm text-[#dc3545]">{error}</p>}
+      {error && (
+        <p className="mt-3 text-sm" style={{ color: C.red }} role="alert">
+          {error}
+        </p>
+      )}
       <button
+        type="button"
         onClick={submit}
-        className="mt-4 w-full rounded-lg py-3 text-base font-semibold text-white transition hover:opacity-90"
+        disabled={submitting}
+        className="mt-4 w-full rounded-lg py-3 text-base font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         style={{ backgroundColor: C.blue }}
       >
-        {type === "login" ? "Log in" : "Sign up"}
+        {submitting ? "Please wait…" : type === "login" ? "Log in" : "Sign up"}
       </button>
     </div>
   );
@@ -1151,6 +1225,21 @@ export default function App() {
     const t = setTimeout(() => setPage(user ? "app" : "login"), 2200);
     return () => clearTimeout(t);
   }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    getMe()
+      .then((res) => {
+        setUser(res.user);
+        persistUser(res.user);
+      })
+      .catch(() => {});
+  }, []);
+
+  const updateUser = (next: User) => {
+    setUser(next);
+    persistUser(next);
+  };
 
   const logout = () => {
     localStorage.removeItem("ng_user");
@@ -1202,7 +1291,13 @@ export default function App() {
     case "reports":
       return <ReportsPage {...shellProps} />;
     case "settings":
-      return <PlaceholderPage {...shellProps} message="Account and system settings." />;
+      return (
+        <SettingsPage
+          {...shellProps}
+          onUserUpdate={updateUser}
+          AppShell={AppShell}
+        />
+      );
     default:
       return <DashboardPage {...shellProps} />;
   }

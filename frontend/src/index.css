@@ -2,6 +2,35 @@
 @tailwind components;
 @tailwind utilities;
 
+:root,
+[data-theme="dark"] {
+  --ng-bg: #0a0e14;
+  --ng-card: #161b22;
+  --ng-border: #30363d;
+  --ng-blue: #007bff;
+  --ng-green: #28a745;
+  --ng-red: #dc3545;
+  --ng-orange: #ffc107;
+  --ng-muted: #8b949e;
+  --ng-text: #ffffff;
+  --ng-input-bg: #0a0e14;
+  --ng-hover: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="light"] {
+  --ng-bg: #f6f8fa;
+  --ng-card: #ffffff;
+  --ng-border: #d0d7de;
+  --ng-blue: #0969da;
+  --ng-green: #1a7f37;
+  --ng-red: #cf222e;
+  --ng-orange: #9a6700;
+  --ng-muted: #656d76;
+  --ng-text: #1f2328;
+  --ng-input-bg: #ffffff;
+  --ng-hover: rgba(0, 0, 0, 0.05);
+}
+
 html,
 body,
 #root {
@@ -14,9 +43,10 @@ html {
 
 body {
   margin: 0;
-  background: #0a0e14;
-  color: #ffffff;
+  background: var(--ng-bg);
+  color: var(--ng-text);
   font-family: "Segoe UI", system-ui, sans-serif;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 .auth-bg {
@@ -37,14 +67,14 @@ body {
 .ng-input {
   width: 100%;
   border-radius: 0.5rem;
-  border: 1px solid #30363d;
-  background: #0a0e14;
-  color: #ffffff;
+  border: 1px solid var(--ng-border);
+  background: var(--ng-input-bg);
+  color: var(--ng-text);
   padding: 0.8rem 0.9rem;
 }
 
 .ng-input::placeholder {
-  color: #8b949e;
+  color: var(--ng-muted);
 }
 
 .glass-card {

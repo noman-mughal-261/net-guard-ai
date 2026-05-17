@@ -36,4 +36,9 @@ def get_settings() -> dict:
             )
             if o.strip()
         ],
+        "upload_dir": os.getenv(
+            "UPLOAD_DIR",
+            os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")), "uploads"),
+        ),
+        "max_avatar_bytes": int(os.getenv("MAX_AVATAR_BYTES", str(2 * 1024 * 1024))),
     }

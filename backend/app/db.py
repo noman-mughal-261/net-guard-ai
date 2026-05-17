@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from bson import ObjectId
-from pymongo import MongoClient
+from pymongo import MongoClient, ReturnDocument
 
 from .config import get_settings
 
@@ -34,6 +34,70 @@ def get_client() -> MongoClient:
 
 def get_db():
     return get_client()[get_settings()["mongo_db"]]
+
+
+_users_index_ready = False
+
+
+def ensure_users_index() -> None:
+    global _users_index_ready
+    if _users_index_ready:
+        return
+    get_db().users.create_index("email", unique=True)
+    _users_index_ready = True
+
+
+def _public_user(doc: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "full_name": doc.get("full_name") or "",
+        "email": doc.get("email") or "",
+        "avatar_url": doc.get("avatar_url"),
+    }
+
+
+def create_user(email: str, full_name: str, password_hash: str) -> dict[str, Any]:
+    ensure_users_index()
+    key = _norm_email(email)
+    now = utcnow()
+    doc = {
+        "email": key,
+        "full_name": full_name.strip(),
+        "password_hash": password_hash,
+        "avatar_url": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    get_db().users.insert_one(doc)
+    return _public_user(doc)
+
+
+def get_user_by_email(email: str) -> dict[str, Any] | None:
+    ensure_users_index()
+    return get_db().users.find_one({"email": _norm_email(email)})
+
+
+def update_user_profile(email: str, *, full_name: str | None = None, avatar_url: str | None = None) -> dict[str, Any] | None:
+    ensure_users_index()
+    updates: dict[str, Any] = {"updated_at": utcnow()}
+    if full_name is not None:
+        updates["full_name"] = full_name.strip()
+    if avatar_url is not None:
+        updates["avatar_url"] = avatar_url
+    res = get_db().users.find_one_and_update(
+        {"email": _norm_email(email)},
+        {"$set": updates},
+        return_document=ReturnDocument.AFTER,
+    )
+    return _public_user(res) if res else None
+
+
+def update_user_password(email: str, password_hash: str) -> bool:
+    ensure_users_index()
+    res = get_db().users.update_one(
+        {"email": _norm_email(email)},
+        {"$set": {"password_hash": password_hash, "updated_at": utcnow()}},
+    )
+    return res.modified_count > 0 or res.matched_count > 0
 
 
 def insert_log(doc: dict[str, Any], user_email: str) -> str:
