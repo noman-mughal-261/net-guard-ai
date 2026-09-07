@@ -295,6 +295,7 @@ def analyze(body: AnalyzeRequest, user_email: str = Depends(require_user_email))
             confidence=pred["confidence"],
             source_ip=body.source_ip,
             log_id=log_id,
+            recipient_email=user_email,
         )
         if not ok:
             insert_audit(

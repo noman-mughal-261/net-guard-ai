@@ -12,14 +12,15 @@ def send_attack_alert(
     confidence: float,
     source_ip: str | None,
     log_id: str | None,
+    recipient_email: str,
 ) -> tuple[bool, str]:
     s = get_settings()
-    if not s["smtp_host"] or not s["smtp_to"]:
+    if not s["smtp_host"] or not recipient_email:
         return False, "SMTP not configured"
     msg = EmailMessage()
     msg["Subject"] = f"[NetGuard AI] High-confidence attack: {label}"
     msg["From"] = s["smtp_from"] or s["smtp_user"] or "netguard@localhost"
-    msg["To"] = s["smtp_to"]
+    msg["To"] = recipient_email
     body = (
         f"Threat: {label}\n"
         f"Confidence: {confidence:.4f}\n"
