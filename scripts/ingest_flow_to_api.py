@@ -5,7 +5,7 @@ Usage:
   python ingest_flow_to_api.py --url http://localhost:8000 --token demo-token-user@example.com --csv path/to/flows.csv
   python ingest_flow_to_api.py --url http://localhost:8000 --json path/to/one_flow.json
 
-CSV must contain columns matching shared/feature_columns.json plus optional source_ip.
+For live capture (contiuuous sniff -> same /api/analyze endpoint), use capture_live_flows.py.
 Set --token or NETGUARD_TOKEN to the login token (same as Authorization: Bearer after login).
 """
 from __future__ import annotations
