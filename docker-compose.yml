@@ -20,8 +20,11 @@ services:
       BLOCK_API_KEY: ${BLOCK_API_KEY:-change-me-in-production}
       CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080
       WHITELIST_IPS: 127.0.0.1,::1,mongo,api
-    # depends_on:
-    #   - mongo
+      SMTP_HOST: smtp-relay.brevo.com
+      SMTP_PORT: "587"
+      SMTP_USER: b84a35001@smtp-brevo.com
+      SMTP_PASSWORD: xsmtpsib-0e29144f3b50debcbc4563fe08f968a6dab151e2bd514da69eddb6202b7363ca-iomVuLeUgJ8t5PaM
+      SMTP_FROM: nomanmughal2796@gmail.com
     volumes:
       - api_uploads:/app/uploads
 

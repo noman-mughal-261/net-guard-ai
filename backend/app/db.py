@@ -186,43 +186,57 @@ def record_traffic_prediction(user_email: str, predicted_label: str) -> None:
     """
     Update lightweight counters for the dashboard.
 
-    Important: we use these counters so we can avoid storing every flow in `logs`
-    (which can overwhelm MongoDB). Detailed `logs` documents are still stored only
-    for high-confidence attacks (see /api/analyze).
+    We avoid storing every traffic flow in MongoDB. Instead, we maintain:
+    - hourly Normal/Attack counters
+    - all-time Normal/Attack counters
+    - per-attack-label counters
     """
     db = get_db()
     uf = _uf(user_email)
 
     hour = utcnow().replace(minute=0, second=0, microsecond=0)
+
     is_normal = predicted_label == "Normal"
     inc_normal = 1 if is_normal else 0
     inc_attack = 0 if is_normal else 1
 
-    # Hourly bucket for the traffic graph (Normal vs Attack lines).
+    # Hourly traffic bucket.
+    # IMPORTANT: Do not put normal/attack in both $inc and $setOnInsert.
     db.traffic_hourly.update_one(
         {**uf, "hour": hour},
         {
-            "$inc": {"normal": inc_normal, "attack": inc_attack},
-            "$setOnInsert": {"normal": 0, "attack": 0, "hour": hour},
+            "$inc": {
+                "normal": inc_normal,
+                "attack": inc_attack,
+            },
+            "$setOnInsert": {
+                "hour": hour,
+            },
         },
         upsert=True,
     )
 
-    # All-time totals for the dashboard metric cards.
+    # All-time traffic totals.
     db.traffic_totals.update_one(
         uf,
         {
-            "$inc": {"normal_flows": inc_normal, "attack_flows": inc_attack},
-            "$setOnInsert": {"normal_flows": 0, "attack_flows": 0},
+            "$inc": {
+                "normal_flows": inc_normal,
+                "attack_flows": inc_attack,
+            },
         },
         upsert=True,
     )
 
-    # Per-label counts for the attack distribution pie.
+    # Per-label attack counts.
     if not is_normal:
         db.traffic_label_counts.update_one(
             {**uf, "label": predicted_label},
-            {"$inc": {"count": 1}},
+            {
+                "$inc": {
+                    "count": 1,
+                }
+            },
             upsert=True,
         )
 
