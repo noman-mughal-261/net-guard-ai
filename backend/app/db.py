@@ -201,30 +201,19 @@ def record_traffic_prediction(user_email: str, predicted_label: str) -> None:
     inc_attack = 0 if is_normal else 1
 
     # Hourly traffic bucket.
-    # IMPORTANT: Do not put normal/attack in both $inc and $setOnInsert.
+    # Only $inc — MongoDB rejects the same path in $inc and $setOnInsert
+    # ("Updating the path 'normal' would create a conflict at 'normal'").
+    # On upsert, equality fields from the filter are copied onto the new doc.
     db.traffic_hourly.update_one(
         {**uf, "hour": hour},
-        {
-            "$inc": {
-                "normal": inc_normal,
-                "attack": inc_attack,
-            },
-            "$setOnInsert": {
-                "hour": hour,
-            },
-        },
+        {"$inc": {"normal": inc_normal, "attack": inc_attack}},
         upsert=True,
     )
 
     # All-time traffic totals.
     db.traffic_totals.update_one(
         uf,
-        {
-            "$inc": {
-                "normal_flows": inc_normal,
-                "attack_flows": inc_attack,
-            },
-        },
+        {"$inc": {"normal_flows": inc_normal, "attack_flows": inc_attack}},
         upsert=True,
     )
 
@@ -232,11 +221,7 @@ def record_traffic_prediction(user_email: str, predicted_label: str) -> None:
     if not is_normal:
         db.traffic_label_counts.update_one(
             {**uf, "label": predicted_label},
-            {
-                "$inc": {
-                    "count": 1,
-                }
-            },
+            {"$inc": {"count": 1}},
             upsert=True,
         )
 
