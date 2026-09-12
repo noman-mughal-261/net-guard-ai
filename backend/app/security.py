@@ -4,8 +4,8 @@ from fastapi import Header, HTTPException
 
 from .config import get_settings
 
-_TOKEN_PREFIX = ""
-# _TOKEN_PREFIX = "demo-token-"
+#_TOKEN_PREFIX = ""
+_TOKEN_PREFIX = "demo-token-"
 
 
 def parse_user_email_from_bearer(authorization: str | None) -> str | None:
