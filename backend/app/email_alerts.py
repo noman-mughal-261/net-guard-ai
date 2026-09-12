@@ -15,6 +15,7 @@ def send_attack_alert(
     recipient_email: str,
 ) -> tuple[bool, str]:
     s = get_settings()
+    print("Email Data",label,confidence,source_ip,log_id,recipient_email)
     if not s["smtp_host"] or not recipient_email:
         return False, "SMTP not configured"
     msg = EmailMessage()

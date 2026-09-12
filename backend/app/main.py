@@ -252,6 +252,8 @@ def history(limit: int = 10, user_email: str = Depends(require_user_email)):
 def analyze(body: AnalyzeRequest, user_email: str = Depends(require_user_email)):
     try:
         pred = ml_service.predict_from_features(body.features)
+        print("Body",body)
+        print("ML Prediction",pred)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -265,21 +267,31 @@ def analyze(body: AnalyzeRequest, user_email: str = Depends(require_user_email))
     # without storing every flow document in MongoDB.
     record_traffic_prediction(user_email, pred["label"])
 
-    log_id = None
+    #log_id = None
     # Store detailed `logs` only when the model predicts an attack label
     # (label != "Normal"). This keeps DB size manageable while still
     # preserving attack context for analysis.
-    if is_attack:
-        log_doc = {
-            "source_ip": body.source_ip,
+   # if is_attack:
+    #    log_doc = {
+     #       "source_ip": body.source_ip,
+      #      "label": pred["label"],
+       #     "confidence": pred["confidence"],
+        #    "probabilities": pred["probabilities"],
+         #   "features": body.features,
+          #  "alert_triggered": should_alert,
+        #}
+        #log_id = insert_log(log_doc, user_email)
+
+    log_doc = {
+         "source_ip": body.source_ip,
             "label": pred["label"],
             "confidence": pred["confidence"],
             "probabilities": pred["probabilities"],
             "features": body.features,
             "alert_triggered": should_alert,
-        }
-        log_id = insert_log(log_doc, user_email)
-
+     }
+    log_id= insert_log(log_doc,user_email)
+    
     alert_id = None
     if should_alert:
         alert_doc = {
@@ -307,6 +319,7 @@ def analyze(body: AnalyzeRequest, user_email: str = Depends(require_user_email))
                 },
                 user_email,
             )
+            print("Alert Faliure Details",msg)
 
     return {
         "label": pred["label"],

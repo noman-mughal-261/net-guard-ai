@@ -113,6 +113,7 @@ def insert_alert(doc: dict[str, Any], user_email: str) -> str:
         "created_at": utcnow(),
         "analyst_status": "open",
     }
+    print("Inerting alert details",doc)
     res = get_db().alerts.insert_one(doc)
     return str(res.inserted_id)
 
