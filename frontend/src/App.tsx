@@ -21,6 +21,7 @@ import {
   login,
   signup,
   startScan,
+  type DashboardDistribution,
   type DashboardSummary,
   getLogs,
   type LogItem,
@@ -89,6 +90,21 @@ const C = {
 
 /** Pie slice colors cycle for attack labels from the API */
 const PIE_PALETTE = [C.red, C.green, C.blue, C.orange, "#6f42c1", "#fd7e14", "#20c997", "#e83e8c"];
+
+function buildTrafficDistributionSlices(dist: DashboardDistribution[]) {
+  let attackIdx = 0;
+  return dist
+    .filter((d) => Math.max(0, d.count) > 0)
+    .map((d) => {
+      const value = Math.max(0, d.count);
+      if (d.label === "Normal") {
+        return { name: d.label, value, color: C.green };
+      }
+      const color = PIE_PALETTE[attackIdx % PIE_PALETTE.length];
+      attackIdx += 1;
+      return { name: d.label, value, color };
+    });
+}
 
 function formatInt(n: number) {
   return n.toLocaleString("en-US");
@@ -466,14 +482,10 @@ function DashboardPage({
     }));
   }, [summary]);
 
-  const pieSlices = useMemo(() => {
-    const dist = summary?.attack_distribution ?? [];
-    return dist.map((d, i) => ({
-      name: d.label,
-      value: Math.max(0, d.count),
-      color: PIE_PALETTE[i % PIE_PALETTE.length],
-    }));
-  }, [summary]);
+  const pieSlices = useMemo(
+    () => buildTrafficDistributionSlices(summary?.attack_distribution ?? []),
+    [summary],
+  );
 
   const metrics = summary?.metrics;
 
@@ -586,11 +598,11 @@ function DashboardPage({
               )}
             </div>
           </ChartCard>
-          <ChartCard title="Attack Distribution" subtitle="By label (non-normal flows)" className="min-h-0 lg:min-h-[300px]">
+          <ChartCard title="Traffic Distribution" subtitle="Normal vs attack labels" className="min-h-0 lg:min-h-[300px]">
             <div className="flex h-[clamp(200px,65vw,280px)] w-full min-w-0 flex-col items-center justify-center pt-2 sm:h-[280px]">
               {pieSlices.length === 0 ? (
                 <p className="px-2 text-center text-sm" style={{ color: C.muted }}>
-                  No attack labels yet. Send flows to <code className="text-xs">POST /api/analyze</code>.
+                  No traffic yet. Send flows to <code className="text-xs">POST /api/analyze</code>.
                 </p>
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
@@ -601,13 +613,14 @@ function DashboardPage({
                       cy="50%"
                       innerRadius={isNarrowChart ? 38 : 56}
                       outerRadius={isNarrowChart ? 62 : 86}
-                      paddingAngle={2}
+                      paddingAngle={pieSlices.length > 1 ? 2 : 0}
                       dataKey="value"
                       nameKey="name"
                       label={
                         isNarrowChart
                           ? false
-                          : ({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`
+                          : ({ name, percent, value }) =>
+                              value > 0 ? `${name} ${((percent ?? 0) * 100).toFixed(0)}%` : ""
                       }
                     >
                       {pieSlices.map((entry) => (
@@ -918,14 +931,10 @@ function TrafficAnalyticsPage(props: {
     }));
   }, [summary]);
 
-  const pieSlices = useMemo(() => {
-    const dist = summary?.attack_distribution ?? [];
-    return dist.map((d, i) => ({
-      name: d.label,
-      value: Math.max(0, d.count),
-      color: PIE_PALETTE[i % PIE_PALETTE.length],
-    }));
-  }, [summary]);
+  const pieSlices = useMemo(
+    () => buildTrafficDistributionSlices(summary?.attack_distribution ?? []),
+    [summary],
+  );
 
   return (
     <AppShell user={props.user} activeNav={props.activeNav} onNavigate={props.onNavigate} onLogout={props.onLogout}>
@@ -999,11 +1008,11 @@ function TrafficAnalyticsPage(props: {
             </div>
           </ChartCard>
 
-          <ChartCard title="Attack Mix" subtitle="Distribution by predicted label" className="min-h-0 lg:min-h-[300px]">
+          <ChartCard title="Traffic Distribution" subtitle="Normal vs attack labels" className="min-h-0 lg:min-h-[300px]">
             <div className="flex h-[clamp(200px,65vw,280px)] w-full min-w-0 flex-col items-center justify-center pt-2 sm:h-[280px]">
               {pieSlices.length === 0 ? (
                 <p className="px-2 text-center text-sm" style={{ color: C.muted }}>
-                  No attack labels yet. Send flows to <code className="text-xs">POST /api/analyze</code>.
+                  No traffic yet. Send flows to <code className="text-xs">POST /api/analyze</code>.
                 </p>
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
@@ -1014,9 +1023,15 @@ function TrafficAnalyticsPage(props: {
                       cy="50%"
                       innerRadius={isNarrowChart ? 38 : 56}
                       outerRadius={isNarrowChart ? 62 : 86}
-                      paddingAngle={2}
+                      paddingAngle={pieSlices.length > 1 ? 2 : 0}
                       dataKey="value"
                       nameKey="name"
+                      label={
+                        isNarrowChart
+                          ? false
+                          : ({ name, percent, value }) =>
+                              value > 0 ? `${name} ${((percent ?? 0) * 100).toFixed(0)}%` : ""
+                      }
                     >
                       {pieSlices.map((entry) => (
                         <Cell key={entry.name} fill={entry.color} stroke={C.border} strokeWidth={1} />

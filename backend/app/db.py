@@ -14,6 +14,17 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _floor_hour(dt: datetime | None = None) -> datetime:
+    """Normalize to a UTC hour bucket (naive datetime, PyMongo/MongoDB convention)."""
+    if dt is None:
+        dt = utcnow()
+    elif isinstance(dt, str):
+        dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc)
+    return dt.replace(tzinfo=None, minute=0, second=0, microsecond=0)
+
+
 def _norm_email(user_email: str) -> str:
     return user_email.lower().strip()
 
@@ -195,7 +206,7 @@ def record_traffic_prediction(user_email: str, predicted_label: str) -> None:
     db = get_db()
     uf = _uf(user_email)
 
-    hour = utcnow().replace(minute=0, second=0, microsecond=0)
+    hour = _floor_hour()
 
     is_normal = predicted_label == "Normal"
     inc_normal = 1 if is_normal else 0
@@ -284,7 +295,7 @@ def dashboard_summary(user_email: str) -> dict[str, Any]:
 
     bucket_map: dict[datetime, list[int]] = defaultdict(lambda: [0, 0])
 
-    now_floor = utcnow().replace(minute=0, second=0, microsecond=0)
+    now_floor = _floor_hour()
     start_floor = now_floor - timedelta(hours=23)
 
     # Prefer hourly counters (works when logs doesn't include every flow).
@@ -292,9 +303,7 @@ def dashboard_summary(user_email: str) -> dict[str, Any]:
         {**uf, "hour": {"$gte": start_floor}},
         {"hour": 1, "normal": 1, "attack": 1},
     ):
-        hour_dt = doc["hour"]
-        if isinstance(hour_dt, str):
-            hour_dt = datetime.fromisoformat(hour_dt.replace("Z", "+00:00"))
+        hour_dt = _floor_hour(doc["hour"])
         bucket_map[hour_dt][0] = int(doc.get("normal") or 0)
         bucket_map[hour_dt][1] = int(doc.get("attack") or 0)
 
@@ -305,7 +314,7 @@ def dashboard_summary(user_email: str) -> dict[str, Any]:
             dt = doc["created_at"]
             if isinstance(dt, str):
                 dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
-            hour_dt = dt.replace(minute=0, second=0, microsecond=0)
+            hour_dt = _floor_hour(dt)
             if doc.get("label") == "Normal":
                 bucket_map[hour_dt][0] += 1
             else:
@@ -318,10 +327,19 @@ def dashboard_summary(user_email: str) -> dict[str, Any]:
         traffic_hourly.append({"hour": f"{t.hour:02d}:00", "normal": n, "attack": a})
 
     breakdown_raw = aggregate_threat_counts(user_email)
+    label_counts: dict[str, int] = {}
+    for row in breakdown_raw:
+        label = str(row["_id"]) if row.get("_id") is not None else "Unknown"
+        label_counts[label] = label_counts.get(label, 0) + int(row.get("count") or 0)
+
+    # Counter-based label docs only track attack labels; merge Normal from totals.
+    if normal_flows > 0 and "Normal" not in label_counts:
+        label_counts["Normal"] = normal_flows
+
     attack_distribution = [
-        {"label": str(row["_id"]) if row["_id"] is not None else "Unknown", "count": int(row["count"])}
-        for row in breakdown_raw
-        if row.get("_id") != "Normal"
+        {"label": label, "count": count}
+        for label, count in sorted(label_counts.items(), key=lambda item: item[1], reverse=True)
+        if count > 0
     ]
 
     recent_alerts_raw = list(alerts.find(uf).sort("created_at", -1).limit(20))
