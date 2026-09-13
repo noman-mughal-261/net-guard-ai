@@ -25,6 +25,7 @@ services:
       SMTP_USER: b84a35001@smtp-brevo.com
       SMTP_PASSWORD: xsmtpsib-0e29144f3b50debcbc4563fe08f968a6dab151e2bd514da69eddb6202b7363ca-iomVuLeUgJ8t5PaM
       SMTP_FROM: nomanmughal2796@gmail.com
+      ALERT_CONFIDENCE_THRESHOLD: "0.35"
     volumes:
       - api_uploads:/app/uploads
 
