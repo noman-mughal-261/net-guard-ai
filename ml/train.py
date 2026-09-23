@@ -1,11 +1,18 @@
 """
-Train NetGuard AI classifier on Edge-IIoTset (or compatible CSV) using scikit-learn.
+Train NetGuard AI classifier on Edge-IIoTset (or compatible CSV)
+using XGBoost.
 
-Set EDGE_IIOTSET_CSV to your ML-EdgeIIoT-dataset.csv path. If unset, uses
-../data/sample_flow_features.csv for a demo pipeline run.
+Set EDGE_IIOTSET_CSV to your ML-EdgeIIoT-dataset.csv path.
+If unset, uses ../data/sample_flow_features.csv for a demo run.
 
-Outputs: model.pkl, scaler.pkl, label_encoder.pkl, feature_names.json, model_metrics.json
+Outputs:
+    model.pkl
+    imputer.pkl
+    label_encoder.pkl
+    feature_names.json
+    model_metrics.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -17,16 +24,23 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+)
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.preprocessing import LabelEncoder
+from xgboost import XGBClassifier
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SHARED = ROOT / "shared"
 DEFAULT_SAMPLE = ROOT / "data" / "sample_flow_features.csv"
 ARTIFACTS = ROOT / "ml" / "artifacts"
+
 
 LABEL_CANDIDATES = [
     "attack_type",
@@ -39,37 +53,50 @@ LABEL_CANDIDATES = [
     "attack_category",
 ]
 
+
 RAW_TO_CLASS = {
     "normal": "Normal",
     "benign": "Normal",
     "Normal": "Normal",
+
     "BACKDOOR": "DoS",
     "Backdoor": "DoS",
+
     "DDOS_HTTP": "DDoS",
     "DDOS_ICMP": "DDoS",
     "DDOS_TCP": "DDoS",
     "DDOS_UDP": "DDoS",
+
     "DDoS_HTTP": "DDoS",
     "DDoS_ICMP": "DDoS",
     "DDoS_TCP": "DDoS",
     "DDoS_UDP": "DDoS",
+
     "DOS_HTTP": "DoS",
     "DOS_TCP": "DoS",
     "DOS_UDP": "DoS",
+
     "DoS_HTTP": "DoS",
     "DoS_TCP": "DoS",
     "DoS_UDP": "DoS",
+
     "FINGERPRINTING": "PortScan",
     "Fingerprinting": "PortScan",
+
     "MITM": "DoS",
+
     "PASSWORD": "Brute_Force",
     "Password": "Brute_Force",
+
     "RANSOMWARE": "DoS",
     "Ransomware": "DoS",
+
     "SQL_INJECTION": "DoS",
     "SQL injection": "DoS",
+
     "UPLOADING": "DoS",
     "Uploading": "DoS",
+
     "XSS": "DoS",
 }
 
@@ -80,33 +107,47 @@ def load_feature_list() -> list[str]:
 
 
 def detect_label_column(df: pd.DataFrame) -> str:
-    for c in LABEL_CANDIDATES:
-        if c in df.columns:
-            return c
+    for column in LABEL_CANDIDATES:
+        if column in df.columns:
+            return column
+
     raise ValueError(
-        f"No label column found. Tried {LABEL_CANDIDATES}. Columns: {list(df.columns)[:30]}..."
+        f"No label column found. Tried {LABEL_CANDIDATES}. "
+        f"Columns: {list(df.columns)[:30]}..."
     )
 
 
 def normalize_labels(series: pd.Series) -> pd.Series:
-    def one(x: object) -> str:
-        s = str(x).strip()
-        if s in RAW_TO_CLASS:
-            return RAW_TO_CLASS[s]
-        low = s.lower().replace(" ", "_")
-        for k, v in RAW_TO_CLASS.items():
-            if k.lower() == low:
-                return v
-        if "ddos" in low:
+    def one(value: object) -> str:
+        value_str = str(value).strip()
+
+        if value_str in RAW_TO_CLASS:
+            return RAW_TO_CLASS[value_str]
+
+        normalized = value_str.lower().replace(" ", "_")
+
+        for key, mapped_value in RAW_TO_CLASS.items():
+            if key.lower() == normalized:
+                return mapped_value
+
+        if "ddos" in normalized:
             return "DDoS"
-        if "dos" in low and "ddos" not in low:
+
+        if "dos" in normalized and "ddos" not in normalized:
             return "DoS"
-        if "finger" in low or ("port" in low and "scan" in low):
+
+        if "finger" in normalized or (
+            "port" in normalized and "scan" in normalized
+        ):
             return "PortScan"
-        if "password" in low or "brute" in low:
+
+        if "password" in normalized or "brute" in normalized:
             return "Brute_Force"
-        if "normal" in low or s == "0":
+
+        if "normal" in normalized or value_str == "0":
             return "Normal"
+
+        # Preserve the behavior of the original pipeline.
         return "DoS"
 
     return series.map(one)
@@ -117,29 +158,68 @@ def build_xy(
     label_col: str,
     feature_cols: list[str],
 ) -> tuple[pd.DataFrame, np.ndarray]:
+
     y_raw = df[label_col]
     y = normalize_labels(y_raw)
-    missing = [c for c in feature_cols if c not in df.columns]
+
+    missing = [
+        column
+        for column in feature_cols
+        if column not in df.columns
+    ]
+
     if missing:
         raise ValueError(
-            f"CSV missing feature columns ({len(missing)}): {missing[:8]}... "
-            "Map Edge-IIoTset columns to names in shared/feature_columns.json or use sample CSV."
+            f"CSV missing feature columns ({len(missing)}): "
+            f"{missing[:8]}... "
+            "Map Edge-IIoTset columns to names in "
+            "shared/feature_columns.json or use sample CSV."
         )
+
     X = df[feature_cols].copy()
+
     return X, y.values
 
 
-def evaluate(le: LabelEncoder, y_test: np.ndarray, y_pred: np.ndarray) -> dict:
-    labels = le.classes_.tolist()
-    acc = float(accuracy_score(y_test, y_pred))
-    f1w = float(f1_score(y_test, y_pred, average="weighted", zero_division=0))
-    cm = confusion_matrix(y_test, y_pred).tolist()
-    report = classification_report(
-        y_test, y_pred, target_names=labels, output_dict=True, zero_division=0
+def evaluate(
+    label_encoder: LabelEncoder,
+    y_test: np.ndarray,
+    y_pred: np.ndarray,
+) -> dict:
+
+    labels = label_encoder.classes_.tolist()
+
+    accuracy = float(
+        accuracy_score(y_test, y_pred)
     )
+
+    f1_weighted = float(
+        f1_score(
+            y_test,
+            y_pred,
+            average="weighted",
+            zero_division=0,
+        )
+    )
+
+    cm = confusion_matrix(
+        y_test,
+        y_pred,
+        labels=range(len(labels)),
+    ).tolist()
+
+    report = classification_report(
+        y_test,
+        y_pred,
+        labels=range(len(labels)),
+        target_names=labels,
+        output_dict=True,
+        zero_division=0,
+    )
+
     return {
-        "accuracy": acc,
-        "f1_weighted": f1w,
+        "accuracy": accuracy,
+        "f1_weighted": f1_weighted,
         "confusion_matrix": cm,
         "labels": labels,
         "classification_report": report,
@@ -148,60 +228,245 @@ def evaluate(le: LabelEncoder, y_test: np.ndarray, y_pred: np.ndarray) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+
     parser.add_argument(
         "--csv",
-        default=os.environ.get("EDGE_IIOTSET_CSV", str(DEFAULT_SAMPLE)),
-        help="Path to Edge-IIoTset ML CSV or sample_flow_features.csv",
+        default=os.environ.get(
+            "EDGE_IIOTSET_CSV",
+            str(DEFAULT_SAMPLE),
+        ),
+        help="Path to Edge-IIoTset ML CSV or sample CSV",
     )
-    parser.add_argument("--out", default=str(ARTIFACTS), help="Artifact directory")
+
+    parser.add_argument(
+        "--out",
+        default=str(ARTIFACTS),
+        help="Artifact directory",
+    )
+
     args = parser.parse_args()
+
     csv_path = Path(args.csv)
     out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
+
+    out_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    # ---------------------------------------------------------
+    # Load feature definitions
+    # ---------------------------------------------------------
 
     feature_cols = load_feature_list()
+
     if not csv_path.exists():
-        print(f"CSV not found: {csv_path}", file=sys.stderr)
+        print(
+            f"CSV not found: {csv_path}",
+            file=sys.stderr,
+        )
         return 1
 
-    df = pd.read_csv(csv_path, low_memory=False)
+    print(f"Loading dataset: {csv_path}")
+
+    df = pd.read_csv(
+        csv_path,
+        low_memory=False,
+    )
+
+    print(f"Dataset shape: {df.shape}")
+
+    # ---------------------------------------------------------
+    # Detect label
+    # ---------------------------------------------------------
+
     label_col = detect_label_column(df)
-    X, y = build_xy(df, label_col, feature_cols)
 
-    for c in X.columns:
-        X[c] = pd.to_numeric(X[c], errors="coerce")
+    print(f"Label column: {label_col}")
 
-    le = LabelEncoder()
-    y_enc = le.fit_transform(y)
-    X_imp = SimpleImputer(strategy="median").fit_transform(X.values.astype(np.float64))
-    scaler = StandardScaler()
-    X_s = scaler.fit_transform(X_imp)
+    # ---------------------------------------------------------
+    # Build X/y
+    # ---------------------------------------------------------
+
+    X, y = build_xy(
+        df,
+        label_col,
+        feature_cols,
+    )
+
+    # Convert all features to numeric.
+    for column in X.columns:
+        X[column] = pd.to_numeric(
+            X[column],
+            errors="coerce",
+        )
+
+    # ---------------------------------------------------------
+    # Encode labels
+    # ---------------------------------------------------------
+
+    label_encoder = LabelEncoder()
+
+    y_encoded = label_encoder.fit_transform(y)
+
+    print(
+        "Classes:",
+        label_encoder.classes_.tolist(),
+    )
+
+    # ---------------------------------------------------------
+    # Train/test split BEFORE fitting imputer
+    # ---------------------------------------------------------
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X_s, y_enc, test_size=0.2, random_state=42, stratify=y_enc
+        X,
+        y_encoded,
+        test_size=0.2,
+        random_state=42,
+        stratify=y_encoded,
     )
 
-    clf = RandomForestClassifier(
-        n_estimators=200,
-        max_depth=22,
-        min_samples_leaf=2,
-        class_weight="balanced_subsample",
+    # ---------------------------------------------------------
+    # Imputation
+    # ---------------------------------------------------------
+
+    imputer = SimpleImputer(
+        strategy="median"
+    )
+
+    X_train = imputer.fit_transform(
+        X_train.astype(np.float64)
+    )
+
+    X_test = imputer.transform(
+        X_test.astype(np.float64)
+    )
+
+    # ---------------------------------------------------------
+    # XGBoost
+    # ---------------------------------------------------------
+
+    num_classes = len(
+        label_encoder.classes_
+    )
+
+    clf = XGBClassifier(
+        n_estimators=500,
+        max_depth=8,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+
+        objective="multi:softprob",
+        num_class=num_classes,
+
+        eval_metric="mlogloss",
+
         random_state=42,
         n_jobs=-1,
+
+        tree_method="hist",
     )
-    clf.fit(X_train, y_train)
+
+    print("Training XGBoost...")
+
+    clf.fit(
+        X_train,
+        y_train,
+        eval_set=[
+            (X_test, y_test)
+        ],
+        verbose=False,
+    )
+
+    # ---------------------------------------------------------
+    # Evaluate
+    # ---------------------------------------------------------
+
     y_pred = clf.predict(X_test)
-    metrics = evaluate(le, y_test, y_pred)
 
-    joblib.dump(clf, out_dir / "model.pkl")
-    joblib.dump(scaler, out_dir / "scaler.pkl")
-    joblib.dump(le, out_dir / "label_encoder.pkl")
-    with open(out_dir / "feature_names.json", "w", encoding="utf-8") as f:
-        json.dump(feature_cols, f, indent=2)
-    with open(out_dir / "model_metrics.json", "w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2)
+    metrics = evaluate(
+        label_encoder,
+        y_test,
+        y_pred,
+    )
 
-    print(json.dumps({"status": "ok", "artifacts": str(out_dir), "metrics": metrics}, indent=2))
+    # ---------------------------------------------------------
+    # Save artifacts
+    # ---------------------------------------------------------
+
+    joblib.dump(
+        clf,
+        out_dir / "model.pkl",
+    )
+
+    joblib.dump(
+        imputer,
+        out_dir / "imputer.pkl",
+    )
+
+    joblib.dump(
+        label_encoder,
+        out_dir / "label_encoder.pkl",
+    )
+
+    with open(
+        out_dir / "feature_names.json",
+        "w",
+        encoding="utf-8",
+    ) as f:
+        json.dump(
+            feature_cols,
+            f,
+            indent=2,
+        )
+
+    with open(
+        out_dir / "model_metrics.json",
+        "w",
+        encoding="utf-8",
+    ) as f:
+        json.dump(
+            metrics,
+            f,
+            indent=2,
+        )
+
+    # ---------------------------------------------------------
+    # Print results
+    # ---------------------------------------------------------
+
+    print()
+    print("=" * 60)
+    print("XGBoost training complete")
+    print("=" * 60)
+
+    print(
+        f"Accuracy:    {metrics['accuracy']:.4f}"
+    )
+
+    print(
+        f"Weighted F1: {metrics['f1_weighted']:.4f}"
+    )
+
+    print(
+        "Classes:",
+        metrics["labels"],
+    )
+
+    print()
+    print(
+        json.dumps(
+            metrics["classification_report"],
+            indent=2,
+        )
+    )
+
+    print()
+    print(
+        f"Artifacts saved to: {out_dir}"
+    )
+
     return 0
 
 

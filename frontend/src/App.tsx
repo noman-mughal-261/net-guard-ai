@@ -12,6 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { PasswordInput } from "./PasswordInput";
 import {
   avatarSrc,
   getDashboardSummary,
@@ -1196,8 +1197,8 @@ function AuthCard({ type, onDone }: { type: "login" | "signup"; onDone: (u: User
       <h2 className="mb-4 text-center text-xl font-bold text-white sm:mb-5 sm:text-2xl">{type === "login" ? "Login" : "Create account"}</h2>
       {type === "signup" && <input className="ng-input" placeholder="Full name" value={fullName} onChange={(e) => setFullName(e.target.value)} />}
       <input className="ng-input mt-3" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-      <input className="ng-input mt-3" type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
-      {type === "signup" && <input className="ng-input mt-3" type="password" placeholder="Confirm password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />}
+      <PasswordInput className="mt-3" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
+      {type === "signup" && <PasswordInput className="mt-3" placeholder="Confirm password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />}
       {type === "signup" && (
         <label className="mt-3 flex items-center gap-2 text-sm" style={{ color: C.muted }}>
           <input type="checkbox" checked={terms} onChange={(e) => setTerms(e.target.checked)} className="rounded border-gray-600" />

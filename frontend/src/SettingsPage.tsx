@@ -1,6 +1,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { avatarSrc, changePassword, updateProfile, uploadAvatar, type UserProfile } from "./api";
 import { useTheme } from "./theme";
+import { PasswordInput } from "./PasswordInput";
 
 const C = {
   card: "var(--ng-card)",
@@ -221,23 +222,20 @@ export function SettingsPage({
           <h2 className="text-base font-semibold sm:text-lg" style={{ color: C.text }}>
             Change password
           </h2>
-          <input
-            className="ng-input mt-4"
-            type="password"
+          <PasswordInput
+            className="mt-4"
             placeholder="Current password"
             value={currentPassword}
             onChange={(e) => setCurrentPassword(e.target.value)}
           />
-          <input
-            className="ng-input mt-3"
-            type="password"
+          <PasswordInput
+            className="mt-3"
             placeholder="New password"
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
           />
-          <input
-            className="ng-input mt-3"
-            type="password"
+          <PasswordInput
+            className="mt-3"
             placeholder="Confirm new password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
